@@ -30,6 +30,7 @@ const PAGES = {
 
 const pendingAuth = new Map();
 
+// PKCE needs URL-safe base64 values for the verifier/challenge pair.
 function base64url(buf) {
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
@@ -48,6 +49,7 @@ function redirectHome(req, res, params = {}, hash = "") {
   res.end();
 }
 
+// Prevent stale OAuth state entries from accumulating on long-lived instances.
 function prunePendingAuth() {
   const now = Date.now();
   for (const [state, entry] of pendingAuth) {

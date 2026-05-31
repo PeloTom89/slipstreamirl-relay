@@ -207,7 +207,7 @@ function readAuthError() {
   const msg = url.searchParams.get("auth_error");
   if (!msg) return null;
   url.searchParams.delete("auth_error");
-  history.replaceState(null, "", url.pathname + (url.search ? url.search : "") + url.hash);
+  history.replaceState(null, "", url.pathname + url.search + url.hash);
   return msg;
 }
 
