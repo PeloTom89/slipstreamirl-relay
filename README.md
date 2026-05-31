@@ -19,7 +19,7 @@ No native app, no RTIRL. Phone → your relay → your overlay.
 
 Replace `YOUR_USERNAME/YOUR_REPO` with this repo, then click:
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/YOUR_USERNAME/YOUR_REPO)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/PeloTom89/OneClickStream.git)
 
 This reads `render.yaml`, creates a free web service, and auto-generates the relay token.
 
