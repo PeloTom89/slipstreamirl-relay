@@ -168,7 +168,14 @@ let relaySock = null;   // WebSocket to the location relay
 function log(msg, kind="") {
   const t = new Date().toLocaleTimeString();
   const line = document.createElement("div");
-  line.innerHTML = `<span class="t">${t}</span> <span class="${kind}">${msg}</span>`;
+  const time = document.createElement("span");
+  time.className = "t";
+  time.textContent = t;
+  const spacer = document.createTextNode(" ");
+  const text = document.createElement("span");
+  text.className = kind;
+  text.textContent = msg;
+  line.append(time, spacer, text);
   els.log.prepend(line);
 }
 
@@ -177,18 +184,13 @@ function setChip(text, mode="") {
   els.chipText.textContent = text;
 }
 
-/* ---------- OAuth (implicit grant, no backend/secret) ---------- */
+/* ---------- OAuth (server-assisted auth code flow) ---------- */
 function connect() {
-  if (CONFIG.CLIENT_ID.startsWith("YOUR_")) {
+  if (!CONFIG.CLIENT_ID || CONFIG.CLIENT_ID.startsWith("YOUR_")) {
     els.hint.textContent = "Set your CLIENT_ID in the CONFIG block first.";
     return;
   }
-  const url = "https://id.twitch.tv/oauth2/authorize"
-    + "?client_id=" + encodeURIComponent(CONFIG.CLIENT_ID)
-    + "&redirect_uri=" + encodeURIComponent(CONFIG.REDIRECT_URI)
-    + "&response_type=token"
-    + "&scope=" + encodeURIComponent(CONFIG.SCOPES);
-  window.location.href = url;
+  window.location.href = "/auth/twitch/start";
 }
 
 function readTokenFromHash() {
@@ -198,6 +200,15 @@ function readTokenFromHash() {
   // clean the token out of the address bar
   history.replaceState(null, "", window.location.pathname + window.location.search);
   return t;
+}
+
+function readAuthError() {
+  const url = new URL(window.location.href);
+  const msg = url.searchParams.get("auth_error");
+  if (!msg) return null;
+  url.searchParams.delete("auth_error");
+  history.replaceState(null, "", url.pathname + url.search + url.hash);
+  return msg;
 }
 
 async function afterAuth(t) {
@@ -346,9 +357,16 @@ function stopGeo() {
 
 /* ---------- boot ---------- */
 els.connectBtn.addEventListener("click", connect);
+const authError = readAuthError();
 const hashToken = readTokenFromHash();
 if (hashToken) afterAuth(hashToken);
-else setChip("OFFLINE", "");
+else {
+  setChip("OFFLINE", "");
+  if (authError) {
+    els.hint.textContent = authError;
+    log(authError, "err");
+  }
+}
 </script>
 </body>
 </html>
