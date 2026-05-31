@@ -18,6 +18,7 @@ const { WebSocketServer } = require("ws");
 const PORT = process.env.PORT || 8080;
 const TOKEN = process.env.RELAY_TOKEN || "change-me";
 const CLIENT_ID = process.env.TWITCH_CLIENT_ID || ""; // set in Render dashboard
+const AUTH_STATE_EXPIRY_MS = 10 * 60 * 1000;
 
 // Serve the two pages straight from this service, so it's one deploy / one URL:
 //   /          -> the control app (open this on your phone)
@@ -86,7 +87,7 @@ const server = http.createServer(async (req, res) => {
     authUrl.searchParams.set("code_challenge", challenge);
     authUrl.searchParams.set("code_challenge_method", "S256");
 
-    pendingAuth.set(state, { verifier, redirectUri, expiresAt: Date.now() + 10 * 60 * 1000 });
+    pendingAuth.set(state, { verifier, redirectUri, expiresAt: Date.now() + AUTH_STATE_EXPIRY_MS });
     res.writeHead(302, { "Location": authUrl.toString(), "Cache-Control": "no-store" });
     res.end();
     return;
@@ -128,7 +129,12 @@ const server = http.createServer(async (req, res) => {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: body.toString(),
       });
-      const tokenJson = await tokenRes.json().catch(() => null);
+      let tokenJson = null;
+      try {
+        tokenJson = await tokenRes.json();
+      } catch (err) {
+        console.error("Could not parse Twitch token response", err);
+      }
       if (!tokenRes.ok || !tokenJson || !tokenJson.access_token) {
         redirectHome(req, res, { auth_error: getTokenErrorMessage(tokenRes, tokenJson) });
         return;

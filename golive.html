@@ -203,10 +203,11 @@ function readTokenFromHash() {
 }
 
 function readAuthError() {
-  const params = new URLSearchParams(window.location.search);
-  const msg = params.get("auth_error");
+  const url = new URL(window.location.href);
+  const msg = url.searchParams.get("auth_error");
   if (!msg) return null;
-  history.replaceState(null, "", window.location.pathname);
+  url.searchParams.delete("auth_error");
+  history.replaceState(null, "", url.pathname + (url.search ? url.search : "") + url.hash);
   return msg;
 }
 
