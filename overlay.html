@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Location overlay</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  html,body{height:100%;margin:0;background:transparent;overflow:hidden}
+  #map{height:100%;width:100%;background:transparent}
+  /* keep it clean for OBS — round the corners, subtle ring */
+  .leaflet-container{border-radius:16px;box-shadow:0 0 0 2px rgba(255,255,255,.15)}
+  .pin{filter:drop-shadow(0 2px 4px rgba(0,0,0,.5))}
+  #offline{position:absolute;top:8px;left:8px;font:600 11px/1 monospace;color:#fff;
+    background:rgba(0,0,0,.55);padding:5px 8px;border-radius:6px;display:none;z-index:1000}
+</style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="offline">no signal</div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    /* ===== CONFIG ===== */
+    // Served from the same host as the relay, so this is auto-detected.
+    const RELAY_URL = location.origin.replace(/^http/, "ws");
+    const ZOOM = 16;
+    /* ================== */
+
+    const map = L.map("map", { zoomControl:false, attributionControl:true }).setView([0,0], ZOOM);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    const offline = document.getElementById("offline");
+    let marker = null, halo = null, gotFix = false;
+
+    function place(lat, lng) {
+      const ll = [lat, lng];
+      if (!marker) {
+        halo = L.circleMarker(ll, { radius: 22, color:"#ff2f3c", weight:0, fillColor:"#ff2f3c", fillOpacity:.18 }).addTo(map);
+        marker = L.circleMarker(ll, { radius: 8, color:"#fff", weight:3, fillColor:"#ff2f3c", fillOpacity:1, className:"pin" }).addTo(map);
+        map.setView(ll, ZOOM);
+      } else {
+        marker.setLatLng(ll); halo.setLatLng(ll);
+        map.panTo(ll, { animate:true, duration:.6 });
+      }
+      gotFix = true;
+      offline.style.display = "none";
+    }
+
+    function connect() {
+      const ws = new WebSocket(RELAY_URL + "?role=overlay");
+      ws.onmessage = (e) => {
+        try { const d = JSON.parse(e.data); if (typeof d.lat==="number") place(d.lat, d.lng); } catch {}
+      };
+      ws.onclose = () => { if (gotFix) offline.style.display = "block"; setTimeout(connect, 2000); };
+      ws.onerror = () => ws.close();
+    }
+    connect();
+  </script>
+</body>
+</html>

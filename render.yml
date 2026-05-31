@@ -1,0 +1,17 @@
+# Render Blueprint — provisions everything automatically.
+# Docs: https://render.com/docs/infrastructure-as-code
+services:
+  - type: web
+    name: irl-stream-control
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      # Render generates a secure random token; the server injects the SAME value
+      # into the control page, so sender and overlay always match. Nothing to copy.
+      - key: RELAY_TOKEN
+        generateValue: true
+      # You enter this once in the Render dashboard during deploy.
+      - key: TWITCH_CLIENT_ID
+        sync: false
