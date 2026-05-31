@@ -168,7 +168,14 @@ let relaySock = null;   // WebSocket to the location relay
 function log(msg, kind="") {
   const t = new Date().toLocaleTimeString();
   const line = document.createElement("div");
-  line.innerHTML = `<span class="t">${t}</span> <span class="${kind}">${msg}</span>`;
+  const time = document.createElement("span");
+  time.className = "t";
+  time.textContent = t;
+  const spacer = document.createTextNode(" ");
+  const text = document.createElement("span");
+  text.className = kind;
+  text.textContent = msg;
+  line.append(time, spacer, text);
   els.log.prepend(line);
 }
 
@@ -199,7 +206,7 @@ function readAuthError() {
   const params = new URLSearchParams(window.location.search);
   const msg = params.get("auth_error");
   if (!msg) return null;
-  history.replaceState(null, "", window.location.pathname + window.location.hash);
+  history.replaceState(null, "", window.location.pathname);
   return msg;
 }
 

@@ -54,6 +54,13 @@ function prunePendingAuth() {
   }
 }
 
+function getTokenErrorMessage(tokenRes, tokenJson) {
+  if (tokenJson && (tokenJson.message || tokenJson.error_description || tokenJson.error)) {
+    return tokenJson.message || tokenJson.error_description || tokenJson.error;
+  }
+  return "Twitch token exchange failed (" + tokenRes.status + ").";
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   const pathname = url.pathname;
@@ -123,13 +130,13 @@ const server = http.createServer(async (req, res) => {
       });
       const tokenJson = await tokenRes.json().catch(() => null);
       if (!tokenRes.ok || !tokenJson || !tokenJson.access_token) {
-        const message = (tokenJson && (tokenJson.message || tokenJson.error_description || tokenJson.error)) || ("Twitch token exchange failed (" + tokenRes.status + ").");
-        redirectHome(req, res, { auth_error: message });
+        redirectHome(req, res, { auth_error: getTokenErrorMessage(tokenRes, tokenJson) });
         return;
       }
 
       redirectHome(req, res, {}, new URLSearchParams({ access_token: tokenJson.access_token }).toString());
-    } catch {
+    } catch (err) {
+      console.error("Twitch sign-in failed", err);
       redirectHome(req, res, { auth_error: "Twitch sign-in failed. Try again." });
     }
     return;
