@@ -12,15 +12,11 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const crypto = require("crypto");
 const { WebSocketServer } = require("ws");
 
 const PORT = process.env.PORT || 8080;
 const TOKEN = process.env.RELAY_TOKEN || "change-me";
 const CLIENT_ID = process.env.TWITCH_CLIENT_ID || ""; // set in Render dashboard
-const AUTH_STATE_EXPIRY_MS = 10 * 60 * 1000;
-const AUTH_START_PATH = "/auth/twitch/start";
-const AUTH_CALLBACK_PATH = "/auth/twitch/callback";
 
 // Serve the two pages straight from this service, so it's one deploy / one URL:
 //   /          -> the control app (open this on your phone)
@@ -30,141 +26,68 @@ const PAGES = {
   "/overlay": "overlay.html",
 };
 
-const pendingAuth = new Map();
-
-// PKCE needs URL-safe base64 values for the verifier/challenge pair.
-function base64url(buf) {
-  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+function broadcast(loc) {
+  lastLocation = { lat: loc.lat, lng: loc.lng, acc: loc.acc ?? null, ts: Date.now() };
+  const payload = JSON.stringify(lastLocation);
+  for (const o of overlays) if (o.readyState === o.OPEN) o.send(payload);
 }
 
-function getBaseUrl(req) {
-  const proto = (req.headers["x-forwarded-proto"] || (req.socket.encrypted ? "https" : "http")).split(",")[0].trim();
-  const host = (req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
-  return `${proto}://${host}`;
-}
+const server = http.createServer((req, res) => {
+  const pathOnly = req.url.split("?")[0];
 
-function redirectHome(req, res, params = {}, hash = "", prefix = "") {
-  const url = new URL(prefix ? `${prefix}/` : "/", getBaseUrl(req));
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-  url.hash = hash;
-  res.writeHead(302, { "Location": url.toString(), "Cache-Control": "no-store" });
-  res.end();
-}
-
-function getPathPrefix(pathname, routeSuffix) {
-  if (pathname === routeSuffix) return "";
-  if (pathname.endsWith(routeSuffix)) return pathname.slice(0, -routeSuffix.length);
-  return null;
-}
-
-// Prevent stale OAuth state entries from accumulating on long-lived instances.
-function prunePendingAuth() {
-  const now = Date.now();
-  for (const [state, entry] of pendingAuth) {
-    if (entry.expiresAt <= now) pendingAuth.delete(state);
-  }
-}
-
-function getTokenErrorMessage(tokenRes, tokenJson) {
-  if (tokenJson && (tokenJson.message || tokenJson.error_description || tokenJson.error)) {
-    return tokenJson.message || tokenJson.error_description || tokenJson.error;
-  }
-  return "Twitch token exchange failed (" + tokenRes.status + ").";
-}
-
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, "http://x");
-  const pathname = url.pathname;
-
-  const authStartPrefix = getPathPrefix(pathname, AUTH_START_PATH);
-  if (authStartPrefix !== null) {
-    if (!CLIENT_ID) {
-      redirectHome(req, res, { auth_error: "Missing Twitch Client ID." }, "", authStartPrefix);
-      return;
-    }
-
-    prunePendingAuth();
-
-    const state = base64url(crypto.randomBytes(24));
-    const verifier = base64url(crypto.randomBytes(48));
-    const challenge = base64url(crypto.createHash("sha256").update(verifier).digest());
-    const callbackPath = `${authStartPrefix}${AUTH_CALLBACK_PATH}`;
-    const redirectUri = new URL(callbackPath, getBaseUrl(req)).toString();
-    const authUrl = new URL("https://id.twitch.tv/oauth2/authorize");
-    authUrl.searchParams.set("client_id", CLIENT_ID);
-    authUrl.searchParams.set("redirect_uri", redirectUri);
-    authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set("scope", "user:write:chat");
-    authUrl.searchParams.set("state", state);
-    authUrl.searchParams.set("code_challenge", challenge);
-    authUrl.searchParams.set("code_challenge_method", "S256");
-
-    pendingAuth.set(state, { verifier, redirectUri, expiresAt: Date.now() + AUTH_STATE_EXPIRY_MS });
-    res.writeHead(302, { "Location": authUrl.toString(), "Cache-Control": "no-store" });
+  // CORS preflight (the native app / browser may send one)
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    });
     res.end();
     return;
   }
 
-  const authCallbackPrefix = getPathPrefix(pathname, AUTH_CALLBACK_PATH);
-  if (authCallbackPrefix !== null) {
-    const error = url.searchParams.get("error");
-    const errorDescription = url.searchParams.get("error_description");
-    if (error) {
-      redirectHome(req, res, { auth_error: errorDescription || error }, "", authCallbackPrefix);
-      return;
-    }
-
-    const code = url.searchParams.get("code");
-    const state = url.searchParams.get("state");
-    if (!code || !state) {
-      redirectHome(req, res, { auth_error: "Missing Twitch authorization response." }, "", authCallbackPrefix);
-      return;
-    }
-
-    prunePendingAuth();
-    const pending = pendingAuth.get(state);
-    pendingAuth.delete(state);
-    if (!pending) {
-      redirectHome(req, res, { auth_error: "Expired Twitch sign-in session. Try again." }, "", authCallbackPrefix);
-      return;
-    }
-
-    try {
-      const body = new URLSearchParams({
-        client_id: CLIENT_ID,
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: pending.redirectUri,
-        code_verifier: pending.verifier,
-      });
-      const tokenRes = await fetch("https://id.twitch.tv/oauth2/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-      });
-      let tokenJson = null;
-      try {
-        tokenJson = await tokenRes.json();
-      } catch (err) {
-        console.error("Could not parse Twitch token response", err);
-      }
-      if (!tokenRes.ok || !tokenJson || !tokenJson.access_token) {
-        redirectHome(req, res, { auth_error: getTokenErrorMessage(tokenRes, tokenJson) }, "", authCallbackPrefix);
-        return;
-      }
-
-      redirectHome(req, res, {}, new URLSearchParams({ access_token: tokenJson.access_token }).toString(), authCallbackPrefix);
-    } catch (err) {
-      console.error("Twitch sign-in failed", err);
-      redirectHome(req, res, { auth_error: "Twitch sign-in failed. Try again." }, "", authCallbackPrefix);
-    }
+  // OAuth bounce for the native app. Twitch only allows https redirect URIs, so it
+  // sends the token here in the URL #fragment; this page forwards it into the app via
+  // its custom scheme. The fragment never reaches the server, so JS handles the hand-off.
+  if (req.method === "GET" && pathOnly === "/app-redirect") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Returning…</title></head>
+<body style="background:#0a0b0d;color:#e8eaed;font-family:sans-serif;text-align:center;padding-top:80px">
+<p>Returning to OneClickStream…</p>
+<a id="back" style="color:#9146ff">Tap here if it doesn't return automatically</a>
+<script>
+  var target = "oneclickstream://redirect" + (window.location.hash || "");
+  document.getElementById("back").href = target;
+  window.location.replace(target);
+</script>
+</body></html>`);
     return;
   }
 
-  const file = PAGES[pathname];
+  // HTTP location push — used by the native app while backgrounded (can't hold a WS open).
+  //   POST /push?token=RELAY_TOKEN   body: {"lat":..,"lng":..,"acc":..}
+  if (req.method === "POST" && pathOnly === "/push") {
+    const token = new URL(req.url, "http://x").searchParams.get("token");
+    if (token !== TOKEN) { res.writeHead(403); res.end("bad token"); return; }
+    let body = "";
+    req.on("data", (c) => { body += c; if (body.length > 1e4) req.destroy(); });
+    req.on("end", () => {
+      let msg;
+      try { msg = JSON.parse(body); } catch { res.writeHead(400); res.end("bad json"); return; }
+      if (typeof msg.lat !== "number" || typeof msg.lng !== "number") {
+        res.writeHead(400); res.end("bad coords"); return;
+      }
+      broadcast(msg);
+      res.writeHead(200, { "Access-Control-Allow-Origin": "*", "Content-Type": "text/plain" });
+      res.end("ok");
+    });
+    return;
+  }
+
+  const file = PAGES[pathOnly];
   if (file) {
     fs.readFile(path.join(__dirname, file), "utf8", (err, html) => {
-      if (err) { res.writeHead(500, { "Content-Type": "text/plain" }); res.end("missing " + file); return; }
+      if (err) { res.writeHead(500); res.end("missing " + file); return; }
       // inject Client ID + token into the control app so nothing is hardcoded
       if (file === "golive.html") {
         const cfg = `<script>window.__CONFIG__=${JSON.stringify({ CLIENT_ID, RELAY_TOKEN: TOKEN })};</script>`;
@@ -201,9 +124,7 @@ wss.on("connection", (ws, req) => {
       let msg;
       try { msg = JSON.parse(buf.toString()); } catch { return; }
       if (typeof msg.lat !== "number" || typeof msg.lng !== "number") return;
-      lastLocation = { lat: msg.lat, lng: msg.lng, acc: msg.acc ?? null, ts: Date.now() };
-      const payload = JSON.stringify(lastLocation);
-      for (const o of overlays) if (o.readyState === o.OPEN) o.send(payload);
+      broadcast(msg);
     });
     return;
   }
