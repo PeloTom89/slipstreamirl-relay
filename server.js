@@ -19,6 +19,8 @@ const PORT = process.env.PORT || 8080;
 const TOKEN = process.env.RELAY_TOKEN || "change-me";
 const CLIENT_ID = process.env.TWITCH_CLIENT_ID || ""; // set in Render dashboard
 const AUTH_STATE_EXPIRY_MS = 10 * 60 * 1000;
+const AUTH_START_PATH = "/auth/twitch/start";
+const AUTH_CALLBACK_PATH = "/auth/twitch/callback";
 
 // Serve the two pages straight from this service, so it's one deploy / one URL:
 //   /          -> the control app (open this on your phone)
@@ -41,12 +43,18 @@ function getBaseUrl(req) {
   return `${proto}://${host}`;
 }
 
-function redirectHome(req, res, params = {}, hash = "") {
-  const url = new URL("/", getBaseUrl(req));
+function redirectHome(req, res, params = {}, hash = "", prefix = "") {
+  const url = new URL(prefix ? `${prefix}/` : "/", getBaseUrl(req));
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
   url.hash = hash;
   res.writeHead(302, { "Location": url.toString(), "Cache-Control": "no-store" });
   res.end();
+}
+
+function getPathPrefix(pathname, routeSuffix) {
+  if (pathname === routeSuffix) return "";
+  if (pathname.endsWith(routeSuffix)) return pathname.slice(0, -routeSuffix.length);
+  return null;
 }
 
 // Prevent stale OAuth state entries from accumulating on long-lived instances.
@@ -68,9 +76,10 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   const pathname = url.pathname;
 
-  if (pathname === "/auth/twitch/start") {
+  const authStartPrefix = getPathPrefix(pathname, AUTH_START_PATH);
+  if (authStartPrefix !== null) {
     if (!CLIENT_ID) {
-      redirectHome(req, res, { auth_error: "Missing Twitch Client ID." });
+      redirectHome(req, res, { auth_error: "Missing Twitch Client ID." }, "", authStartPrefix);
       return;
     }
 
@@ -79,7 +88,8 @@ const server = http.createServer(async (req, res) => {
     const state = base64url(crypto.randomBytes(24));
     const verifier = base64url(crypto.randomBytes(48));
     const challenge = base64url(crypto.createHash("sha256").update(verifier).digest());
-    const redirectUri = new URL("/auth/twitch/callback", getBaseUrl(req)).toString();
+    const callbackPath = `${authStartPrefix}${AUTH_CALLBACK_PATH}`;
+    const redirectUri = new URL(callbackPath, getBaseUrl(req)).toString();
     const authUrl = new URL("https://id.twitch.tv/oauth2/authorize");
     authUrl.searchParams.set("client_id", CLIENT_ID);
     authUrl.searchParams.set("redirect_uri", redirectUri);
@@ -95,18 +105,19 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (pathname === "/auth/twitch/callback") {
+  const authCallbackPrefix = getPathPrefix(pathname, AUTH_CALLBACK_PATH);
+  if (authCallbackPrefix !== null) {
     const error = url.searchParams.get("error");
     const errorDescription = url.searchParams.get("error_description");
     if (error) {
-      redirectHome(req, res, { auth_error: errorDescription || error });
+      redirectHome(req, res, { auth_error: errorDescription || error }, "", authCallbackPrefix);
       return;
     }
 
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
     if (!code || !state) {
-      redirectHome(req, res, { auth_error: "Missing Twitch authorization response." });
+      redirectHome(req, res, { auth_error: "Missing Twitch authorization response." }, "", authCallbackPrefix);
       return;
     }
 
@@ -114,7 +125,7 @@ const server = http.createServer(async (req, res) => {
     const pending = pendingAuth.get(state);
     pendingAuth.delete(state);
     if (!pending) {
-      redirectHome(req, res, { auth_error: "Expired Twitch sign-in session. Try again." });
+      redirectHome(req, res, { auth_error: "Expired Twitch sign-in session. Try again." }, "", authCallbackPrefix);
       return;
     }
 
@@ -138,14 +149,14 @@ const server = http.createServer(async (req, res) => {
         console.error("Could not parse Twitch token response", err);
       }
       if (!tokenRes.ok || !tokenJson || !tokenJson.access_token) {
-        redirectHome(req, res, { auth_error: getTokenErrorMessage(tokenRes, tokenJson) });
+        redirectHome(req, res, { auth_error: getTokenErrorMessage(tokenRes, tokenJson) }, "", authCallbackPrefix);
         return;
       }
 
-      redirectHome(req, res, {}, new URLSearchParams({ access_token: tokenJson.access_token }).toString());
+      redirectHome(req, res, {}, new URLSearchParams({ access_token: tokenJson.access_token }).toString(), authCallbackPrefix);
     } catch (err) {
       console.error("Twitch sign-in failed", err);
-      redirectHome(req, res, { auth_error: "Twitch sign-in failed. Try again." });
+      redirectHome(req, res, { auth_error: "Twitch sign-in failed. Try again." }, "", authCallbackPrefix);
     }
     return;
   }

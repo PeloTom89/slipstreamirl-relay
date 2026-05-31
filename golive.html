@@ -190,7 +190,7 @@ function connect() {
     els.hint.textContent = "Set your CLIENT_ID in the CONFIG block first.";
     return;
   }
-  window.location.href = "/auth/twitch/start";
+  window.location.href = new URL("./auth/twitch/start", window.location.href).toString();
 }
 
 function readTokenFromHash() {
