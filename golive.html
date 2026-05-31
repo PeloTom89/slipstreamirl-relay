@@ -184,13 +184,18 @@ function setChip(text, mode="") {
   els.chipText.textContent = text;
 }
 
-/* ---------- OAuth (server-assisted auth code flow) ---------- */
+/* ---------- OAuth (implicit grant, straight to Twitch, no backend secret) ---------- */
 function connect() {
   if (!CONFIG.CLIENT_ID || CONFIG.CLIENT_ID.startsWith("YOUR_")) {
     els.hint.textContent = "Set your CLIENT_ID in the CONFIG block first.";
     return;
   }
-  window.location.href = new URL("./auth/twitch/start", window.location.href).toString();
+  const url = "https://id.twitch.tv/oauth2/authorize"
+    + "?client_id=" + encodeURIComponent(CONFIG.CLIENT_ID)
+    + "&redirect_uri=" + encodeURIComponent(CONFIG.REDIRECT_URI)
+    + "&response_type=token"
+    + "&scope=" + encodeURIComponent(CONFIG.SCOPES);
+  window.location.href = url;
 }
 
 function readTokenFromHash() {
@@ -204,9 +209,11 @@ function readTokenFromHash() {
 
 function readAuthError() {
   const url = new URL(window.location.href);
-  const msg = url.searchParams.get("auth_error");
+  // Twitch returns ?error=... on the redirect if the user declines or config is off
+  const msg = url.searchParams.get("error_description") || url.searchParams.get("error");
   if (!msg) return null;
-  url.searchParams.delete("auth_error");
+  url.searchParams.delete("error");
+  url.searchParams.delete("error_description");
   history.replaceState(null, "", url.pathname + url.search + url.hash);
   return msg;
 }
