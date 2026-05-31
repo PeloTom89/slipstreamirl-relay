@@ -12,6 +12,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { WebSocketServer } = require("ws");
 
 const PORT = process.env.PORT || 8080;
@@ -26,11 +27,118 @@ const PAGES = {
   "/overlay": "overlay.html",
 };
 
-const server = http.createServer((req, res) => {
-  const file = PAGES[req.url.split("?")[0]];
+const pendingAuth = new Map();
+
+function base64url(buf) {
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function getBaseUrl(req) {
+  const proto = (req.headers["x-forwarded-proto"] || (req.socket.encrypted ? "https" : "http")).split(",")[0].trim();
+  const host = (req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+  return `${proto}://${host}`;
+}
+
+function redirectHome(req, res, params = {}, hash = "") {
+  const url = new URL("/", getBaseUrl(req));
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
+  url.hash = hash;
+  res.writeHead(302, { "Location": url.toString(), "Cache-Control": "no-store" });
+  res.end();
+}
+
+function prunePendingAuth() {
+  const now = Date.now();
+  for (const [state, entry] of pendingAuth) {
+    if (entry.expiresAt <= now) pendingAuth.delete(state);
+  }
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, "http://x");
+  const pathname = url.pathname;
+
+  if (pathname === "/auth/twitch/start") {
+    if (!CLIENT_ID) {
+      redirectHome(req, res, { auth_error: "Missing Twitch Client ID." });
+      return;
+    }
+
+    prunePendingAuth();
+
+    const state = base64url(crypto.randomBytes(24));
+    const verifier = base64url(crypto.randomBytes(48));
+    const challenge = base64url(crypto.createHash("sha256").update(verifier).digest());
+    const redirectUri = new URL("/auth/twitch/callback", getBaseUrl(req)).toString();
+    const authUrl = new URL("https://id.twitch.tv/oauth2/authorize");
+    authUrl.searchParams.set("client_id", CLIENT_ID);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("scope", "user:write:chat");
+    authUrl.searchParams.set("state", state);
+    authUrl.searchParams.set("code_challenge", challenge);
+    authUrl.searchParams.set("code_challenge_method", "S256");
+
+    pendingAuth.set(state, { verifier, redirectUri, expiresAt: Date.now() + 10 * 60 * 1000 });
+    res.writeHead(302, { "Location": authUrl.toString(), "Cache-Control": "no-store" });
+    res.end();
+    return;
+  }
+
+  if (pathname === "/auth/twitch/callback") {
+    const error = url.searchParams.get("error");
+    const errorDescription = url.searchParams.get("error_description");
+    if (error) {
+      redirectHome(req, res, { auth_error: errorDescription || error });
+      return;
+    }
+
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state");
+    if (!code || !state) {
+      redirectHome(req, res, { auth_error: "Missing Twitch authorization response." });
+      return;
+    }
+
+    prunePendingAuth();
+    const pending = pendingAuth.get(state);
+    pendingAuth.delete(state);
+    if (!pending) {
+      redirectHome(req, res, { auth_error: "Expired Twitch sign-in session. Try again." });
+      return;
+    }
+
+    try {
+      const body = new URLSearchParams({
+        client_id: CLIENT_ID,
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: pending.redirectUri,
+        code_verifier: pending.verifier,
+      });
+      const tokenRes = await fetch("https://id.twitch.tv/oauth2/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: body.toString(),
+      });
+      const tokenJson = await tokenRes.json().catch(() => null);
+      if (!tokenRes.ok || !tokenJson || !tokenJson.access_token) {
+        const message = (tokenJson && (tokenJson.message || tokenJson.error_description || tokenJson.error)) || ("Twitch token exchange failed (" + tokenRes.status + ").");
+        redirectHome(req, res, { auth_error: message });
+        return;
+      }
+
+      redirectHome(req, res, {}, new URLSearchParams({ access_token: tokenJson.access_token }).toString());
+    } catch {
+      redirectHome(req, res, { auth_error: "Twitch sign-in failed. Try again." });
+    }
+    return;
+  }
+
+  const file = PAGES[pathname];
   if (file) {
     fs.readFile(path.join(__dirname, file), "utf8", (err, html) => {
-      if (err) { res.writeHead(500); res.end("missing " + file); return; }
+      if (err) { res.writeHead(500, { "Content-Type": "text/plain" }); res.end("missing " + file); return; }
       // inject Client ID + token into the control app so nothing is hardcoded
       if (file === "golive.html") {
         const cfg = `<script>window.__CONFIG__=${JSON.stringify({ CLIENT_ID, RELAY_TOKEN: TOKEN })};</script>`;
