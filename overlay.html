@@ -39,12 +39,31 @@
       const rot = (typeof hdg === "number" && hdg >= 0) ? hdg : 0;
       return L.divIcon({
         className: "",
-        iconSize: [28, 28],
-        iconAnchor: [14, 14],
-        html: `<svg width="28" height="28" viewBox="0 0 28 28"
-                 style="transform:rotate(${rot}deg);filter:drop-shadow(0 2px 4px rgba(0,0,0,.5))">
-                 <polygon points="14,3 25,25 14,18 3,25"
-                   fill="#ff2f3c" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
+        iconSize: [44, 66],
+        iconAnchor: [22, 33],
+        html: `<svg width="44" height="66" viewBox="-22 -33 44 66"
+                 style="transform:rotate(${rot}deg);filter:drop-shadow(0 3px 7px rgba(0,0,0,.75))">
+               <!-- Front wheel (top = direction of travel) -->
+               <ellipse cx="0" cy="-27" rx="4.5" ry="11" fill="#111"/>
+               <!-- Back wheel -->
+               <ellipse cx="0" cy="27" rx="4.5" ry="11" fill="#111"/>
+               <!-- Frame -->
+               <rect x="-1.5" y="-15" width="3" height="42" rx="1.5" fill="#555"/>
+               <!-- Body / jersey -->
+               <ellipse cx="0" cy="8" rx="9" ry="13" fill="#cc1111"/>
+               <!-- Shoulders -->
+               <ellipse cx="0" cy="-4" rx="11" ry="5.5" fill="#cc1111"/>
+               <!-- Arms reaching to bars -->
+               <line x1="-11" y1="-4" x2="-13" y2="-20" stroke="#cc1111" stroke-width="3.5" stroke-linecap="round"/>
+               <line x1="11"  y1="-4" x2="13"  y2="-20" stroke="#cc1111" stroke-width="3.5" stroke-linecap="round"/>
+               <!-- Handlebars -->
+               <line x1="-15" y1="-20" x2="15" y2="-20" stroke="#2a2a2a" stroke-width="3" stroke-linecap="round"/>
+               <!-- Helmet -->
+               <ellipse cx="0" cy="-14" rx="8.5" ry="9.5" fill="#ff6a00"/>
+               <!-- Helmet vents -->
+               <line x1="-4" y1="-18" x2="-4" y2="-11" stroke="#ff8c33" stroke-width="1.2" stroke-linecap="round" opacity="0.7"/>
+               <line x1="0"  y1="-19" x2="0"  y2="-11" stroke="#ff8c33" stroke-width="1.2" stroke-linecap="round" opacity="0.7"/>
+               <line x1="4"  y1="-18" x2="4"  y2="-11" stroke="#ff8c33" stroke-width="1.2" stroke-linecap="round" opacity="0.7"/>
                </svg>`
       });
     }
