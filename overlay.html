@@ -13,6 +13,12 @@
     pointer-events:none;z-index:500;border-radius:16px}
   #offline{position:absolute;top:8px;left:8px;font:600 11px/1 monospace;color:#fff;
     background:rgba(0,0,0,.55);padding:5px 8px;border-radius:6px;display:none;z-index:1000}
+  .pulse-ring{width:40px;height:40px;border-radius:50%;border:3px solid #1a6abf;
+    box-sizing:border-box;animation:pulse-ring 1.8s ease-out infinite}
+  @keyframes pulse-ring{
+    0%  {transform:scale(0.6);opacity:0.9}
+    100%{transform:scale(2.2);opacity:0}
+  }
 </style>
 </head>
 <body>
@@ -34,6 +40,13 @@
 
     const offline = document.getElementById("offline");
     let marker = null, halo = null, gotFix = false;
+
+    const pulseIcon = L.divIcon({
+      className: "",
+      iconSize: [40, 40],
+      iconAnchor: [20, 20],
+      html: '<div class="pulse-ring"></div>'
+    });
 
     function makeIcon(hdg) {
       const rot = (typeof hdg === "number" && hdg >= 0) ? hdg : 0;
@@ -71,7 +84,7 @@
     function place(lat, lng, hdg) {
       const ll = [lat, lng];
       if (!marker) {
-        halo = L.circleMarker(ll, { radius: 22, color:"#ff2f3c", weight:0, fillColor:"#ff2f3c", fillOpacity:.18 }).addTo(map);
+        halo = L.marker(ll, { icon: pulseIcon, zIndexOffset: -1 }).addTo(map);
         marker = L.marker(ll, { icon: makeIcon(hdg) }).addTo(map);
         map.setView(ll, ZOOM);
       } else {
