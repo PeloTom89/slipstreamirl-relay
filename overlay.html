@@ -72,8 +72,8 @@
     // wind.vx/vy: unit vector in the direction wind is blowing TO
     // wind.speed: pixels per frame
     let wind = null;
-    const PARTICLE_COUNT = 150;
-    const TRAIL_LEN = 8;
+    const PARTICLE_COUNT = 200;
+    const TRAIL_LEN = 14;
     const particles = [];
 
     function resizeCanvas() {
@@ -118,14 +118,17 @@
         }
 
         if (p.trail.length < 2) continue;
-        const alpha = Math.sin(Math.PI * (p.age / p.maxAge)) * 0.55;
-        ctx.strokeStyle = `rgba(140,210,255,${alpha.toFixed(2)})`;
-        ctx.lineWidth = 1.2;
+        const alpha = Math.sin(Math.PI * (p.age / p.maxAge)) * 0.85;
+        ctx.strokeStyle = `rgba(180,230,255,${alpha.toFixed(2)})`;
+        ctx.lineWidth = 2;
         ctx.lineCap  = "round";
+        ctx.shadowColor = "rgba(120,200,255,0.6)";
+        ctx.shadowBlur  = 6;
         ctx.beginPath();
         ctx.moveTo(p.trail[0].x, p.trail[0].y);
         for (let i = 1; i < p.trail.length; i++) ctx.lineTo(p.trail[i].x, p.trail[i].y);
         ctx.stroke();
+        ctx.shadowBlur = 0;
       }
     }
     animateWind();
