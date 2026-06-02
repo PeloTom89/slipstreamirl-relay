@@ -83,10 +83,12 @@
     resizeCanvas();
 
     function resetParticle(p) {
-      p.x      = Math.random() * canvas.width;
-      p.y      = Math.random() * canvas.height;
-      p.age    = Math.random() * 60;
-      p.maxAge = 80 + Math.random() * 80;
+      p.x         = Math.random() * canvas.width;
+      p.y         = Math.random() * canvas.height;
+      p.age       = Math.random() * 60;
+      p.maxAge    = 60 + Math.random() * 100;
+      p.speedMult = 0.4 + Math.random() * 1.2;
+      p.size      = 6 + Math.random() * 7;
     }
 
     for (let i = 0; i < PARTICLE_COUNT; i++) {
@@ -101,11 +103,10 @@
       if (!wind || !gotFix) return;
 
       const angle = Math.atan2(wind.vy, wind.vx);
-      const size  = 9;
 
       for (const p of particles) {
-        p.x += wind.vx * wind.speed;
-        p.y += wind.vy * wind.speed;
+        p.x += wind.vx * wind.speed * p.speedMult;
+        p.y += wind.vy * wind.speed * p.speedMult;
         p.age++;
 
         if (p.age > p.maxAge ||
@@ -116,6 +117,7 @@
         }
 
         const alpha = Math.sin(Math.PI * (p.age / p.maxAge)) * 0.8;
+        const s     = p.size;
         ctx.save();
         ctx.translate(p.x, p.y);
         ctx.rotate(angle);
@@ -124,10 +126,10 @@
         ctx.shadowColor  = "rgba(255,240,180,0.5)";
         ctx.shadowBlur   = 5;
         ctx.beginPath();
-        ctx.moveTo( size,          0);           // tip
-        ctx.lineTo(-size * 0.5, -size * 0.55);  // back-left wing
-        ctx.lineTo(-size * 0.2,    0);           // tail notch
-        ctx.lineTo(-size * 0.5,  size * 0.55);  // back-right wing
+        ctx.moveTo( s,          0);           // tip
+        ctx.lineTo(-s * 0.5, -s * 0.55);     // back-left wing
+        ctx.lineTo(-s * 0.2,    0);           // tail notch
+        ctx.lineTo(-s * 0.5,  s * 0.55);     // back-right wing
         ctx.closePath();
         ctx.fill();
         ctx.restore();
