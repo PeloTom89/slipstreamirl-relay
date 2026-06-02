@@ -27,9 +27,9 @@ const PAGES = {
 };
 
 function broadcast(loc) {
-  lastLocation = { lat: loc.lat, lng: loc.lng, acc: loc.acc ?? null, ts: Date.now() };
+  lastLocation = { lat: loc.lat, lng: loc.lng, acc: loc.acc ?? null, hdg: loc.hdg ?? null, ts: Date.now() };
   const payload = JSON.stringify(lastLocation);
-  for (const o of overlays) if (o.readyState === o.OPEN) o.send(payload);
+  for (const o of overlays) if (o.readyState === o.OPEN) o.send(payload, () => {});
 }
 
 const server = http.createServer((req, res) => {
@@ -113,6 +113,7 @@ wss.on("connection", (ws, req) => {
 
   if (role === "overlay") {
     overlays.add(ws);
+    ws.on("error", () => {});
     if (lastLocation) ws.send(JSON.stringify(lastLocation));
     ws.on("close", () => overlays.delete(ws));
     return;
@@ -120,6 +121,7 @@ wss.on("connection", (ws, req) => {
 
   if (role === "sender") {
     if (token !== TOKEN) { ws.close(1008, "bad token"); return; }
+    ws.on("error", () => {});
     ws.on("message", (buf) => {
       let msg;
       try { msg = JSON.parse(buf.toString()); } catch { return; }
