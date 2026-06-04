@@ -53,10 +53,10 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Returning…</title></head>
 <body style="background:#0a0b0d;color:#e8eaed;font-family:sans-serif;text-align:center;padding-top:80px">
-<p>Returning to OneClickStream…</p>
+<p>Returning to SlipstreamIRL…</p>
 <a id="back" style="color:#9146ff">Tap here if it doesn't return automatically</a>
 <script>
-  var target = "oneclickstream://redirect" + (window.location.hash || "");
+  var target = "slipstreamirl://redirect" + (window.location.hash || "");
   document.getElementById("back").href = target;
   window.location.replace(target);
 </script>

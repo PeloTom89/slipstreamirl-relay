@@ -1,4 +1,6 @@
-# IRL Stream Control
+# SlipstreamIRL Relay
+
+The backend web service for the **SlipstreamIRL** app (deploys as your own Render service, e.g. `irl-stream-control`).
 
 One free web service that:
 
@@ -19,7 +21,7 @@ No native app, no RTIRL. Phone → your relay → your overlay.
 
 Replace `YOUR_USERNAME/YOUR_REPO` with this repo, then click:
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/PeloTom89/OneClickStream.git)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/PeloTom89/slipstreamirl-relay.git)
 
 This reads `render.yaml`, creates a free web service, and auto-generates the relay token.
 
