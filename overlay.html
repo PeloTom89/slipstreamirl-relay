@@ -47,7 +47,7 @@
     const STALE_MS = 12000;
     let staleTimer = null;
 
-    function showStage() { stage.classList.remove("hidden"); }
+    function showStage() { stage.classList.remove("hidden"); resizeCanvas(); }
     function hideStage() { stage.classList.add("hidden"); }
 
     function markFresh() {
@@ -123,8 +123,13 @@
     const particles = [];
 
     function resizeCanvas() {
-      canvas.width  = canvas.offsetWidth;
-      canvas.height = canvas.offsetHeight;
+      // Only size when the canvas actually has layout (it lives inside #stage,
+      // which starts hidden) — never clobber the bitmap to 0, or wind won't draw.
+      const w = canvas.offsetWidth, h = canvas.offsetHeight;
+      if (w && h && (canvas.width !== w || canvas.height !== h)) {
+        canvas.width  = w;
+        canvas.height = h;
+      }
     }
     window.addEventListener("resize", resizeCanvas);
     resizeCanvas();
