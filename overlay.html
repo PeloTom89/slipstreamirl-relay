@@ -7,12 +7,12 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   html,body{height:100%;margin:0;background:transparent;overflow:hidden}
+  #stage{height:100%;width:100%;transition:opacity .4s ease}
+  #stage.hidden{opacity:0;pointer-events:none}
   #map{height:100%;width:100%;background:transparent}
   .leaflet-container{border-radius:16px;box-shadow:0 0 0 2px rgba(255,255,255,.15)}
   #wind-canvas{position:absolute;top:0;left:0;width:100%;height:100%;
     pointer-events:none;z-index:500;border-radius:16px}
-  #offline{position:absolute;top:8px;left:8px;font:600 11px/1 monospace;color:#fff;
-    background:rgba(0,0,0,.55);padding:5px 8px;border-radius:6px;display:none;z-index:1000}
   .pulse-ring{width:40px;height:40px;border-radius:50%;border:3px solid #1a6abf;
     box-sizing:border-box;animation:pulse-ring 1.8s ease-out infinite}
   @keyframes pulse-ring{
@@ -22,9 +22,10 @@
 </style>
 </head>
 <body>
-  <div id="map"></div>
-  <canvas id="wind-canvas"></canvas>
-  <div id="offline">no signal</div>
+  <div id="stage" class="hidden">
+    <div id="map"></div>
+    <canvas id="wind-canvas"></canvas>
+  </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     /* ===== CONFIG ===== */
@@ -38,8 +39,22 @@
       attribution: '&copy; OpenStreetMap'
     }).addTo(map);
 
-    const offline = document.getElementById("offline");
+    const stage = document.getElementById("stage");
     let marker = null, halo = null, gotFix = false;
+
+    // Hide the whole overlay if no location update arrives within this window.
+    // The app pushes every ~3s, so 12s means "sharing has stopped".
+    const STALE_MS = 12000;
+    let staleTimer = null;
+
+    function showStage() { stage.classList.remove("hidden"); }
+    function hideStage() { stage.classList.add("hidden"); }
+
+    function markFresh() {
+      showStage();
+      if (staleTimer) clearTimeout(staleTimer);
+      staleTimer = setTimeout(hideStage, STALE_MS);
+    }
 
     const pulseIcon = L.divIcon({
       className: "",
@@ -94,7 +109,7 @@
         map.panTo(ll, { animate:true, duration:.6 });
       }
       gotFix = true;
-      offline.style.display = "none";
+      markFresh();
     }
 
     /* ===== Wind particle system ===== */
@@ -196,6 +211,8 @@
       ws.onmessage = (e) => {
         try {
           const d = JSON.parse(e.data);
+          // Ignore the relay's cached fix if it's already stale (stream is off).
+          if (typeof d.ts === "number" && Date.now() - d.ts > STALE_MS) return;
           if (typeof d.lat === "number") {
             place(d.lat, d.lng, d.hdg);
             // Refresh wind data at most once every 10 minutes.
@@ -207,7 +224,7 @@
           }
         } catch {}
       };
-      ws.onclose = () => { if (gotFix) offline.style.display = "block"; setTimeout(connect, 2000); };
+      ws.onclose = () => { hideStage(); setTimeout(connect, 2000); };
       ws.onerror = () => ws.close();
     }
     connect();
