@@ -64,6 +64,18 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Health / token check — used by the app's "Test connection" button.
+  //   GET /health?token=RELAY_TOKEN  -> 200 "ok" if token matches, else 403.
+  if (req.method === "GET" && pathOnly === "/health") {
+    const token = new URL(req.url, "http://x").searchParams.get("token");
+    res.writeHead(token === TOKEN ? 200 : 403, {
+      "Access-Control-Allow-Origin": "*",
+      "Content-Type": "text/plain",
+    });
+    res.end(token === TOKEN ? "ok" : "bad token");
+    return;
+  }
+
   // HTTP location push — used by the native app while backgrounded (can't hold a WS open).
   //   POST /push?token=RELAY_TOKEN   body: {"lat":..,"lng":..,"acc":..}
   if (req.method === "POST" && pathOnly === "/push") {
