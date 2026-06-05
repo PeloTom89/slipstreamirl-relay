@@ -18,6 +18,14 @@
     0%  {transform:scale(0.6);opacity:0.9}
     100%{transform:scale(2.2);opacity:0}
   }
+  .qmark{width:34px;height:34px;border-radius:50%;background:rgba(15,23,38,.88);
+    border:2px solid #4d96ff;color:#cfe0ff;text-align:center;
+    font:800 20px/31px -apple-system,Segoe UI,sans-serif;
+    box-shadow:0 2px 6px rgba(0,0,0,.55);animation:qpulse 1.4s ease-in-out infinite}
+  @keyframes qpulse{
+    0%,100%{transform:scale(1);opacity:.8}
+    50%    {transform:scale(1.18);opacity:1}
+  }
 </style>
 </head>
 <body>
@@ -46,6 +54,25 @@
       iconAnchor: [20, 20],
       html: '<div class="pulse-ring"></div>'
     });
+
+    const questionIcon = L.divIcon({
+      className: "",
+      iconSize: [34, 34],
+      iconAnchor: [17, 17],
+      html: '<div class="qmark">?</div>'
+    });
+
+    // When no location arrives for STALE_MS (stream stopped OR inside the
+    // privacy geofence), swap the cyclist for a pulsing "?" — map stays frozen.
+    const STALE_MS = 12000;
+    let staleTimer = null, stale = false, lastHdg = 0;
+
+    function setStale(s) {
+      if (s === stale || !marker) return;
+      stale = s;
+      if (s) { marker.setIcon(questionIcon); if (halo) halo.setOpacity(0); }
+      else   { marker.setIcon(makeIcon(lastHdg)); if (halo) halo.setOpacity(1); }
+    }
 
     function makeIcon(hdg) {
       const rot = (typeof hdg === "number" && hdg >= 0) ? hdg : 0;
@@ -82,6 +109,7 @@
 
     function place(lat, lng, hdg) {
       const ll = [lat, lng];
+      lastHdg = hdg;
       if (!marker) {
         halo = L.marker(ll, { icon: pulseIcon, zIndexOffset: -1 }).addTo(map);
         marker = L.marker(ll, { icon: makeIcon(hdg) }).addTo(map);
@@ -89,10 +117,13 @@
       } else {
         halo.setLatLng(ll);
         marker.setLatLng(ll);
-        marker.setIcon(makeIcon(hdg));
+        if (!stale) marker.setIcon(makeIcon(hdg));
         map.panTo(ll, { animate:true, duration:.6 });
       }
       gotFix = true;
+      setStale(false);
+      if (staleTimer) clearTimeout(staleTimer);
+      staleTimer = setTimeout(() => setStale(true), STALE_MS);
     }
 
     /* ===== Wind particle system ===== */
