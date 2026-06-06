@@ -8,25 +8,28 @@
   html,body{height:100%;margin:0;background:transparent;overflow:hidden;
     font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
   #wrap{height:100%;width:100%;display:flex;align-items:center;justify-content:center}
-  /* Device — scales with the OBS source height; portrait like a Karoo. */
-  #device{height:96vh;aspect-ratio:62/100;background:#0c0d10;border-radius:30px;
-    padding:14px 12px;box-sizing:border-box;display:flex;flex-direction:column;
+  /* One base unit tied to source height (font-size:vh); everything below is em,
+     so the whole device — including the SPEED/DISTANCE cards — scales with the
+     OBS source size. */
+  #device{height:96vh;aspect-ratio:62/100;font-size:2.2vh;background:#0c0d10;
+    border-radius:1.6em;padding:0.8em 0.7em;box-sizing:border-box;
+    display:flex;flex-direction:column;
     box-shadow:0 10px 40px rgba(0,0,0,.55), inset 0 0 0 2px #1c1f26}
-  #screen{flex:1;background:#fff;border-radius:14px;overflow:hidden;display:flex;flex-direction:column;position:relative}
-  #brand{color:#7a8089;text-align:center;font-size:13px;font-weight:800;letter-spacing:3px;padding:7px 0 2px}
+  #screen{flex:1;background:#fff;border-radius:0.7em;overflow:hidden;display:flex;flex-direction:column;position:relative}
+  #brand{color:#7a8089;text-align:center;font-size:0.7em;font-weight:800;letter-spacing:0.2em;padding:0.45em 0 0.1em}
 
   #topbar{display:flex;justify-content:space-between;align-items:center;
-    padding:7px 14px;color:#0c0d10;font-weight:700;font-size:18px;
+    padding:0.4em 0.8em;color:#0c0d10;font-weight:700;font-size:1em;
     font-variant-numeric:tabular-nums}
 
-  #cards{display:flex;gap:8px;padding:6px 8px 8px}
-  .card{flex:1;border:1px solid #e6e8eb;border-radius:12px;padding:7px 12px}
+  #cards{display:flex;gap:0.5em;padding:0.35em 0.5em 0.5em}
+  .card{flex:1;border:1px solid #e6e8eb;border-radius:0.6em;padding:0.4em 0.7em}
   .card .lbl{display:flex;align-items:center;justify-content:space-between;
-    color:#8b919a;font-size:13px;font-weight:700;letter-spacing:1px}
-  .card .lbl svg{width:16px;height:16px}
-  .card .val{color:#0c0d10;font-weight:800;font-size:46px;line-height:1.05;
-    font-variant-numeric:tabular-nums;margin-top:2px}
-  .card .val .unit{font-size:16px;font-weight:700;color:#8b919a;margin-left:4px}
+    color:#8b919a;font-size:0.72em;font-weight:700;letter-spacing:0.06em}
+  .card .lbl svg{width:1.2em;height:1.2em}
+  .card .val{color:#0c0d10;font-weight:800;font-size:2.5em;line-height:1.05;
+    font-variant-numeric:tabular-nums;margin-top:0.05em}
+  .card .val .unit{font-size:0.4em;font-weight:700;color:#8b919a;margin-left:0.3em}
 
   /* Map is the real /overlay page embedded, so cyclist + wind + "?" all carry over. */
   #mapwrap{flex:1;position:relative;background:#e9e7e2}
