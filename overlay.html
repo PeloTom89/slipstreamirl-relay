@@ -125,16 +125,15 @@
       armStale();
     }
 
-    /* ===== Wind particle system ===== */
+    /* ===== Single wind arrow ===== */
     const canvas = document.getElementById("wind-canvas");
     const ctx = canvas.getContext("2d");
 
     // wind.vx/vy: unit vector in the direction wind is blowing TO
-    // wind.speed: pixels per frame
+    // wind.speed: pixels per frame (scales with wind speed)
     let wind = null;
-    let motionScale = 1, drawScale = 1; // motion scales linearly (consistent speed); particle size sub-linearly (stays visible when small)
-    const PARTICLE_COUNT = 25;
-    const particles = [];
+    let motionScale = 1, drawScale = 1;
+    let arrowOffset = null; // signed distance from canvas centre along wind direction
 
     function resizeCanvas() {
       const w = canvas.offsetWidth, h = canvas.offsetHeight;
@@ -142,63 +141,48 @@
         canvas.width  = w;
         canvas.height = h;
       }
-      if (canvas.height) { const r = canvas.height / 700; motionScale = r; drawScale = Math.sqrt(r); } // 700px tall = baseline
+      if (canvas.height) { const r = canvas.height / 700; motionScale = r; drawScale = Math.sqrt(r); }
     }
     window.addEventListener("resize", resizeCanvas);
     resizeCanvas();
-
-    function resetParticle(p) {
-      p.x         = Math.random() * canvas.width;
-      p.y         = Math.random() * canvas.height;
-      p.age       = Math.random() * 60;
-      p.maxAge    = 60 + Math.random() * 100;
-      p.speedMult = 0.4 + Math.random() * 1.2;
-      p.size      = 14 + Math.random() * 10;
-    }
-
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
-      const p = {};
-      resetParticle(p);
-      particles.push(p);
-    }
 
     function animateWind() {
       requestAnimationFrame(animateWind);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (!wind || !gotFix) return;
 
+      // Full sweep distance: enter from one edge of canvas, exit the other.
+      const travel = Math.sqrt(canvas.width ** 2 + canvas.height ** 2) * 0.65;
+      if (arrowOffset === null) arrowOffset = -travel;
+
+      arrowOffset += wind.speed * 2 * motionScale;
+      if (arrowOffset > travel) arrowOffset = -travel;
+
+      const cx = canvas.width  / 2;
+      const cy = canvas.height / 2;
+      const x  = cx + wind.vx * arrowOffset;
+      const y  = cy + wind.vy * arrowOffset;
+
+      // Fade in from upwind edge, full opacity at centre, fade out to downwind edge.
+      const alpha = Math.sin(Math.PI * (arrowOffset + travel) / (2 * travel)) * 0.95;
       const angle = Math.atan2(wind.vy, wind.vx);
+      const s     = 22 * drawScale;
 
-      for (const p of particles) {
-        p.x += wind.vx * wind.speed * p.speedMult * motionScale;
-        p.y += wind.vy * wind.speed * p.speedMult * motionScale;
-        p.age++;
-
-        if (p.age > p.maxAge ||
-            p.x < -20 || p.x > canvas.width  + 20 ||
-            p.y < -20 || p.y > canvas.height + 20) {
-          resetParticle(p);
-          continue;
-        }
-
-        const alpha = Math.sin(Math.PI * (p.age / p.maxAge)) * 0.92;
-        const s     = p.size * drawScale;
-        ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(angle);
-        ctx.globalAlpha  = alpha;
-        ctx.fillStyle    = "#5b9cf6";
-        ctx.shadowColor  = "rgba(30,80,200,0.5)";
-        ctx.shadowBlur   = 8;
-        ctx.beginPath();
-        ctx.moveTo( s,          0);           // tip
-        ctx.lineTo(-s * 0.5, -s * 0.55);     // back-left wing
-        ctx.lineTo(-s * 0.2,    0);           // tail notch
-        ctx.lineTo(-s * 0.5,  s * 0.55);     // back-right wing
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-      }
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.globalAlpha = Math.max(0, alpha);
+      ctx.fillStyle   = "#5b9cf6";
+      ctx.shadowColor = "rgba(30,80,200,0.5)";
+      ctx.shadowBlur  = 8;
+      ctx.beginPath();
+      ctx.moveTo( s,          0);
+      ctx.lineTo(-s * 0.5, -s * 0.55);
+      ctx.lineTo(-s * 0.2,    0);
+      ctx.lineTo(-s * 0.5,  s * 0.55);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
       ctx.globalAlpha = 1;
     }
     animateWind();
