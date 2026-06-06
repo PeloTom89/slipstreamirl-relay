@@ -78,6 +78,35 @@ async function fetchBadges(roomId) {
   return map;
 }
 
+// Temporary diagnostic for /badges?debug=1 — surfaces where the chain fails
+// without leaking the secret (only the client-id tail is shown).
+async function badgeDebug(room) {
+  const out = {
+    hasBadgeClientId: !!BADGE_CLIENT_ID,
+    badgeClientIdTail: BADGE_CLIENT_ID ? BADGE_CLIENT_ID.slice(-4) : null,
+    hasSecret: !!CLIENT_SECRET,
+    secretLen: CLIENT_SECRET ? CLIENT_SECRET.length : 0,
+  };
+  try {
+    const turl = "https://id.twitch.tv/oauth2/token?client_id=" + encodeURIComponent(BADGE_CLIENT_ID) +
+      "&client_secret=" + encodeURIComponent(CLIENT_SECRET) + "&grant_type=client_credentials";
+    const tr = await fetch(turl, { method: "POST" });
+    out.tokenStatus = tr.status;
+    const tj = await tr.json();
+    out.tokenOk = !!tj.access_token;
+    if (!tj.access_token) { out.tokenBody = tj; return out; }
+    const gr = await fetch("https://api.twitch.tv/helix/chat/badges/global",
+      { headers: { Authorization: "Bearer " + tj.access_token, "Client-Id": BADGE_CLIENT_ID } });
+    out.helixStatus = gr.status;
+    const gj = await gr.json();
+    out.globalSets = (gj.data || []).length;
+    if (!gj.data) out.helixBody = gj;
+  } catch (e) {
+    out.exception = String((e && e.message) || e);
+  }
+  return out;
+}
+
 const server = http.createServer((req, res) => {
   const pathOnly = req.url.split("?")[0];
 
@@ -125,11 +154,13 @@ const server = http.createServer((req, res) => {
   // Chat badge map for the chat overlay: GET /badges?room=<broadcaster_id>
   // Returns { "set_id/version": imageUrl, ... }. Empty {} if no CLIENT_SECRET.
   if (req.method === "GET" && pathOnly === "/badges") {
-    const room = new URL(req.url, "http://x").searchParams.get("room") || "";
+    const u = new URL(req.url, "http://x");
+    const room = u.searchParams.get("room") || "";
     const done = (obj) => {
       res.writeHead(200, { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" });
       res.end(JSON.stringify(obj));
     };
+    if (u.searchParams.get("debug")) { badgeDebug(room).then(done).catch((e) => done({ exception: String(e) })); return; }
     if (!CLIENT_SECRET) { done({}); return; }
     fetchBadges(room).then(done).catch(() => done({}));
     return;
