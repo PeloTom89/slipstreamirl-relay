@@ -16,8 +16,12 @@ const { WebSocketServer } = require("ws");
 
 const PORT = process.env.PORT || 8080;
 const TOKEN = process.env.RELAY_TOKEN || "change-me";
-const CLIENT_ID = process.env.TWITCH_CLIENT_ID || ""; // set in Render dashboard
-const CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || ""; // optional, enables chat badge icons
+const CLIENT_ID = process.env.TWITCH_CLIENT_ID || ""; // login app (public) — user OAuth
+// Badge lookups use a Twitch app token (client credentials), which requires a
+// CONFIDENTIAL app. The public login app can't have a secret, so this is a
+// separate app: its Client ID + Secret below. Falls back to the login app's ID.
+const BADGE_CLIENT_ID = process.env.TWITCH_BADGE_CLIENT_ID || CLIENT_ID;
+const CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
 
 // Serve the two pages straight from this service, so it's one deploy / one URL:
 //   /          -> the control app (open this on your phone)
@@ -42,7 +46,7 @@ function broadcast(loc) {
 let appToken = null, appTokenExp = 0;
 async function getAppToken() {
   if (appToken && Date.now() < appTokenExp - 60000) return appToken;
-  const url = "https://id.twitch.tv/oauth2/token?client_id=" + encodeURIComponent(CLIENT_ID) +
+  const url = "https://id.twitch.tv/oauth2/token?client_id=" + encodeURIComponent(BADGE_CLIENT_ID) +
     "&client_secret=" + encodeURIComponent(CLIENT_SECRET) + "&grant_type=client_credentials";
   const r = await fetch(url, { method: "POST" });
   const j = await r.json();
@@ -57,7 +61,7 @@ async function fetchBadges(roomId) {
   const hit = badgeCache.get(key);
   if (hit && Date.now() < hit.exp) return hit.map;
   const token = await getAppToken();
-  const headers = { Authorization: "Bearer " + token, "Client-Id": CLIENT_ID };
+  const headers = { Authorization: "Bearer " + token, "Client-Id": BADGE_CLIENT_ID };
   const map = {}; // "set_id/version" -> image url
   const urls = ["https://api.twitch.tv/helix/chat/badges/global"];
   if (roomId) urls.push("https://api.twitch.tv/helix/chat/badges?broadcaster_id=" + encodeURIComponent(roomId));
