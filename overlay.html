@@ -133,7 +133,7 @@
     // wind.speed: pixels per frame
     let wind = null;
     let motionScale = 1, drawScale = 1; // motion scales linearly (consistent speed); particle size sub-linearly (stays visible when small)
-    const PARTICLE_COUNT = 120;
+    const PARTICLE_COUNT = 50;
     const particles = [];
 
     function resizeCanvas() {
@@ -153,7 +153,7 @@
       p.age       = Math.random() * 60;
       p.maxAge    = 60 + Math.random() * 100;
       p.speedMult = 0.4 + Math.random() * 1.2;
-      p.size      = 6 + Math.random() * 7;
+      p.size      = 14 + Math.random() * 10;
     }
 
     for (let i = 0; i < PARTICLE_COUNT; i++) {
@@ -181,15 +181,15 @@
           continue;
         }
 
-        const alpha = Math.sin(Math.PI * (p.age / p.maxAge)) * 0.8;
+        const alpha = Math.sin(Math.PI * (p.age / p.maxAge)) * 0.92;
         const s     = p.size * drawScale;
         ctx.save();
         ctx.translate(p.x, p.y);
         ctx.rotate(angle);
         ctx.globalAlpha  = alpha;
-        ctx.fillStyle    = "#fffceb";
-        ctx.shadowColor  = "rgba(255,240,180,0.5)";
-        ctx.shadowBlur   = 5;
+        ctx.fillStyle    = "#1a3050";
+        ctx.shadowColor  = "rgba(10,30,60,0.6)";
+        ctx.shadowBlur   = 8;
         ctx.beginPath();
         ctx.moveTo( s,          0);           // tip
         ctx.lineTo(-s * 0.5, -s * 0.55);     // back-left wing
