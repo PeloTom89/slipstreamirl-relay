@@ -9,13 +9,14 @@
     font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
   /* Bottom ticker strip. Works whether the OBS source is 1920x1080 or a thin
      1920x70 strip — it's pinned to the bottom either way. */
-  #ticker{position:fixed;left:0;bottom:0;width:100%;height:64px;overflow:hidden;
+  #ticker{position:fixed;left:0;bottom:0;width:100%;height:42px;overflow:hidden;
     background:linear-gradient(0deg, rgba(0,0,0,.60), rgba(0,0,0,.20));}
-  .item{position:absolute;left:0;bottom:0;height:64px;display:flex;align-items:center;
-    white-space:nowrap;font-size:30px;font-weight:600;color:#fff;
+  .item{position:absolute;left:0;bottom:0;height:42px;display:flex;align-items:center;
+    white-space:nowrap;font-size:20px;font-weight:600;color:#fff;
     text-shadow:0 2px 4px rgba(0,0,0,.85);will-change:transform}
   .item .u{font-weight:800;margin-right:12px}
   .item .m{color:#f1f3f5}
+  .item .badge{width:18px;height:18px;margin-right:5px;vertical-align:middle;flex:0 0 auto}
   #hint{position:fixed;left:12px;bottom:18px;color:#9aa3af;font-size:16px;
     text-shadow:0 1px 3px #000}
 </style>
@@ -47,16 +48,47 @@
       return palette[h % palette.length];
     }
 
+    /* ===== Twitch badges (subscriber, mod, broadcaster…) via the public v1 API,
+       which needs no auth — fine for an anonymous overlay. ===== */
+    const badgeMap = {};   // "set/version" -> image URL
+    let roomId = null;
+
+    function mergeBadges(sets) {
+      if (!sets) return;
+      for (const set in sets) {
+        const versions = sets[set].versions || {};
+        for (const v in versions) {
+          badgeMap[set + "/" + v] = versions[v].image_url_2x || versions[v].image_url_1x;
+        }
+      }
+    }
+    async function loadBadges(url) {
+      try { const r = await fetch(url); const j = await r.json(); mergeBadges(j.badge_sets); } catch {}
+    }
+    // Global badges (mod, broadcaster, VIP, prime…) need no channel id.
+    loadBadges("https://badges.twitch.tv/v1/badges/global/display");
+
+    function badgeHtml(badges) {
+      if (!badges) return "";
+      let out = "";
+      for (const b of badges.split(",")) {
+        const url = badgeMap[b];               // b is like "subscriber/12"
+        if (url) out += `<img class="badge" src="${url}" alt="">`;
+      }
+      return out;
+    }
+
     /* ===== Ticker: each message is an absolutely-positioned element that moves
        left at a constant speed. New messages spawn at the right edge, or just to
        the right of the previous one if it hasn't cleared yet (so they queue). === */
     const items = [];
     let lastTs = null;
 
-    function addMessage(user, color, text) {
+    function addMessage(user, color, text, badges) {
       const el = document.createElement("div");
       el.className = "item";
-      el.innerHTML = `<span class="u" style="color:${color}">${esc(user)}</span><span class="m">${esc(text)}</span>`;
+      el.innerHTML = badgeHtml(badges) +
+        `<span class="u" style="color:${color}">${esc(user)}</span><span class="m">${esc(text)}</span>`;
       ticker.appendChild(el);
       const w = el.offsetWidth;
 
@@ -114,7 +146,13 @@
 
           const dn  = (tags.match(/display-name=([^;]+)/) || [])[1] || (rest.match(/^:(\w+)!/) || [])[1] || "?";
           const col = (tags.match(/color=(#[0-9A-Fa-f]{6})/) || [])[1] || hashColor(dn);
-          addMessage(dn, col, text);
+          const badges = (tags.match(/badges=([^;]*)/) || [])[1] || "";
+          // Channel-specific subscriber badges need the room id (from the tags).
+          if (!roomId) {
+            const rid = (tags.match(/room-id=([^;]+)/) || [])[1];
+            if (rid) { roomId = rid; loadBadges("https://badges.twitch.tv/v1/badges/channels/" + rid + "/display"); }
+          }
+          addMessage(dn, col, text, badges);
         }
       };
       ws.onclose = () => setTimeout(connectIRC, 3000);
