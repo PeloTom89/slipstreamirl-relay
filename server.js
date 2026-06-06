@@ -27,7 +27,9 @@ const PAGES = {
 };
 
 function broadcast(loc) {
-  lastLocation = { lat: loc.lat, lng: loc.lng, acc: loc.acc ?? null, hdg: loc.hdg ?? null, ts: Date.now() };
+  lastLocation = loc.hidden
+    ? { hidden: true, ts: Date.now() }
+    : { lat: loc.lat, lng: loc.lng, acc: loc.acc ?? null, hdg: loc.hdg ?? null, ts: Date.now() };
   const payload = JSON.stringify(lastLocation);
   for (const o of overlays) if (o.readyState === o.OPEN) o.send(payload, () => {});
 }
@@ -86,7 +88,9 @@ const server = http.createServer((req, res) => {
     req.on("end", () => {
       let msg;
       try { msg = JSON.parse(body); } catch { res.writeHead(400); res.end("bad json"); return; }
-      if (typeof msg.lat !== "number" || typeof msg.lng !== "number") {
+      // A {hidden:true} heartbeat (sent while inside the privacy geofence) is
+      // allowed without coordinates; otherwise lat/lng are required.
+      if (!msg.hidden && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) {
         res.writeHead(400); res.end("bad coords"); return;
       }
       broadcast(msg);

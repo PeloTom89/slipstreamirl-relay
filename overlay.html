@@ -62,10 +62,16 @@
       html: '<div class="qmark">?</div>'
     });
 
-    // When no location arrives for STALE_MS (stream stopped OR inside the
-    // privacy geofence), swap the cyclist for a pulsing "?" — map stays frozen.
-    const STALE_MS = 12000;
+    // The app sends an explicit {hidden:true} heartbeat while inside the privacy
+    // geofence -> show "?" immediately. STALE_MS is only a fallback for a true
+    // silence (stream actually stopped). Coordinates arriving -> cyclist.
+    const STALE_MS = 30000;
     let staleTimer = null, stale = false, lastHdg = 0;
+
+    function armStale() {
+      if (staleTimer) clearTimeout(staleTimer);
+      staleTimer = setTimeout(() => setStale(true), STALE_MS);
+    }
 
     function setStale(s) {
       if (s === stale || !marker) return;
@@ -122,8 +128,7 @@
       }
       gotFix = true;
       setStale(false);
-      if (staleTimer) clearTimeout(staleTimer);
-      staleTimer = setTimeout(() => setStale(true), STALE_MS);
+      armStale();
     }
 
     /* ===== Wind particle system ===== */
@@ -230,6 +235,7 @@
       ws.onmessage = (e) => {
         try {
           const d = JSON.parse(e.data);
+          if (d.hidden) { setStale(true); armStale(); return; }
           if (typeof d.lat === "number") {
             place(d.lat, d.lng, d.hdg);
             // Refresh wind data at most once every 10 minutes.
