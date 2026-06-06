@@ -163,8 +163,10 @@
       const x  = cx + wind.vx * arrowOffset;
       const y  = cy + wind.vy * arrowOffset;
 
-      // Fade in from upwind edge, full opacity at centre, fade out to downwind edge.
-      const alpha = Math.sin(Math.PI * (arrowOffset + travel) / (2 * travel)) * 0.95;
+      // Fade in as arrow approaches the icon, peak at centre, fade out after.
+      const fadeZone = travel * 0.38;
+      const t = (arrowOffset + fadeZone) / (2 * fadeZone);
+      const alpha = (t >= 0 && t <= 1) ? Math.sin(Math.PI * t) * 0.95 : 0;
       const angle = Math.atan2(wind.vy, wind.vx);
       const s     = 22 * drawScale;
 
