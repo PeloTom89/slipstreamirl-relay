@@ -17,6 +17,7 @@ const { WebSocketServer } = require("ws");
 const PORT = process.env.PORT || 8080;
 const TOKEN = process.env.RELAY_TOKEN || "change-me";
 const CLIENT_ID = process.env.TWITCH_CLIENT_ID || ""; // set in Render dashboard
+const CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || ""; // optional, enables chat badge icons
 
 // Serve the two pages straight from this service, so it's one deploy / one URL:
 //   /          -> the control app (open this on your phone)
@@ -33,6 +34,44 @@ function broadcast(loc) {
     : { lat: loc.lat, lng: loc.lng, acc: loc.acc ?? null, hdg: loc.hdg ?? null, ts: Date.now() };
   const payload = JSON.stringify(lastLocation);
   for (const o of overlays) if (o.readyState === o.OPEN) o.send(payload, () => {});
+}
+
+// ---- Twitch chat badges (proxied via an app access token) ----
+// The old no-auth badges.twitch.tv host was retired, so badge images now come
+// from Helix, which needs an app token (CLIENT_ID + CLIENT_SECRET).
+let appToken = null, appTokenExp = 0;
+async function getAppToken() {
+  if (appToken && Date.now() < appTokenExp - 60000) return appToken;
+  const url = "https://id.twitch.tv/oauth2/token?client_id=" + encodeURIComponent(CLIENT_ID) +
+    "&client_secret=" + encodeURIComponent(CLIENT_SECRET) + "&grant_type=client_credentials";
+  const r = await fetch(url, { method: "POST" });
+  const j = await r.json();
+  appToken = j.access_token;
+  appTokenExp = Date.now() + ((j.expires_in || 3600) * 1000);
+  return appToken;
+}
+
+const badgeCache = new Map(); // key -> { map, exp }
+async function fetchBadges(roomId) {
+  const key = roomId || "global";
+  const hit = badgeCache.get(key);
+  if (hit && Date.now() < hit.exp) return hit.map;
+  const token = await getAppToken();
+  const headers = { Authorization: "Bearer " + token, "Client-Id": CLIENT_ID };
+  const map = {}; // "set_id/version" -> image url
+  const urls = ["https://api.twitch.tv/helix/chat/badges/global"];
+  if (roomId) urls.push("https://api.twitch.tv/helix/chat/badges?broadcaster_id=" + encodeURIComponent(roomId));
+  for (const u of urls) {
+    const r = await fetch(u, { headers });
+    const j = await r.json();
+    for (const set of (j.data || [])) {
+      for (const v of (set.versions || [])) {
+        map[set.set_id + "/" + v.id] = v.image_url_2x || v.image_url_1x;
+      }
+    }
+  }
+  badgeCache.set(key, { map, exp: Date.now() + 60 * 60 * 1000 }); // cache 1h
+  return map;
 }
 
 const server = http.createServer((req, res) => {
@@ -76,6 +115,19 @@ const server = http.createServer((req, res) => {
       "Content-Type": "text/plain",
     });
     res.end(token === TOKEN ? "ok" : "bad token");
+    return;
+  }
+
+  // Chat badge map for the chat overlay: GET /badges?room=<broadcaster_id>
+  // Returns { "set_id/version": imageUrl, ... }. Empty {} if no CLIENT_SECRET.
+  if (req.method === "GET" && pathOnly === "/badges") {
+    const room = new URL(req.url, "http://x").searchParams.get("room") || "";
+    const done = (obj) => {
+      res.writeHead(200, { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" });
+      res.end(JSON.stringify(obj));
+    };
+    if (!CLIENT_SECRET) { done({}); return; }
+    fetchBadges(room).then(done).catch(() => done({}));
     return;
   }
 

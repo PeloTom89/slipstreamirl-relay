@@ -53,20 +53,14 @@
     const badgeMap = {};   // "set/version" -> image URL
     let roomId = null;
 
-    function mergeBadges(sets) {
-      if (!sets) return;
-      for (const set in sets) {
-        const versions = sets[set].versions || {};
-        for (const v in versions) {
-          badgeMap[set + "/" + v] = versions[v].image_url_2x || versions[v].image_url_1x;
-        }
-      }
+    // Badges are proxied by the relay (Twitch's no-auth badge host was retired).
+    // One call returns global + this channel's subscriber badges as a flat map.
+    async function loadBadges(room) {
+      try {
+        const r = await fetch("/badges" + (room ? "?room=" + encodeURIComponent(room) : ""));
+        Object.assign(badgeMap, await r.json());
+      } catch {}
     }
-    async function loadBadges(url) {
-      try { const r = await fetch(url); const j = await r.json(); mergeBadges(j.badge_sets); } catch {}
-    }
-    // Global badges (mod, broadcaster, VIP, prime…) need no channel id.
-    loadBadges("https://badges.twitch.tv/v1/badges/global/display");
 
     function badgeHtml(badges) {
       if (!badges) return "";
@@ -150,7 +144,7 @@
           // Channel-specific subscriber badges need the room id (from the tags).
           if (!roomId) {
             const rid = (tags.match(/room-id=([^;]+)/) || [])[1];
-            if (rid) { roomId = rid; loadBadges("https://badges.twitch.tv/v1/badges/channels/" + rid + "/display"); }
+            if (rid) { roomId = rid; loadBadges(rid); }
           }
           addMessage(dn, col, text, badges);
         }
