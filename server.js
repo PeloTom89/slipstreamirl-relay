@@ -24,6 +24,7 @@ const CLIENT_ID = process.env.TWITCH_CLIENT_ID || ""; // set in Render dashboard
 const PAGES = {
   "/": "golive.html",
   "/overlay": "overlay.html",
+  "/chat": "chat.html",
 };
 
 function broadcast(loc) {

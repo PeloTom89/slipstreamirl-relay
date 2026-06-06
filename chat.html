@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Chat ticker</title>
+<style>
+  html,body{height:100%;margin:0;background:transparent;overflow:hidden;
+    font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  /* Bottom ticker strip. Works whether the OBS source is 1920x1080 or a thin
+     1920x70 strip — it's pinned to the bottom either way. */
+  #ticker{position:fixed;left:0;bottom:0;width:100%;height:64px;overflow:hidden;
+    background:linear-gradient(0deg, rgba(0,0,0,.60), rgba(0,0,0,.20));}
+  .item{position:absolute;left:0;bottom:0;height:64px;display:flex;align-items:center;
+    white-space:nowrap;font-size:30px;font-weight:600;color:#fff;
+    text-shadow:0 2px 4px rgba(0,0,0,.85);will-change:transform}
+  .item .u{font-weight:800;margin-right:12px}
+  .item .m{color:#f1f3f5}
+  #hint{position:fixed;left:12px;bottom:18px;color:#9aa3af;font-size:16px;
+    text-shadow:0 1px 3px #000}
+</style>
+</head>
+<body>
+  <div id="ticker"></div>
+  <div id="hint"></div>
+  <script>
+    /* ===== CONFIG ===== */
+    // Channel comes from the URL: /chat?channel=yourtwitchlogin
+    const channel = (new URLSearchParams(location.search).get("channel") || "").toLowerCase().trim();
+    const SPEED = 130;   // pixels per second the ticker scrolls left
+    const GAP   = 70;    // pixels of space between consecutive messages
+    const MAX_BACKLOG_FACTOR = 4; // drop messages if the off-screen queue gets this many screens long
+    /* ================== */
+
+    const ticker = document.getElementById("ticker");
+    const hint = document.getElementById("hint");
+    if (!channel) hint.textContent = "Add ?channel=YOUR_TWITCH_LOGIN to the URL";
+
+    function esc(s) {
+      return s.replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c]));
+    }
+
+    function hashColor(name) {
+      const palette = ["#ff7675","#fdcb6e","#74e8a0","#54c1ff","#b39dff","#ff9ff3","#ffa94d"];
+      let h = 0;
+      for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+      return palette[h % palette.length];
+    }
+
+    /* ===== Ticker: each message is an absolutely-positioned element that moves
+       left at a constant speed. New messages spawn at the right edge, or just to
+       the right of the previous one if it hasn't cleared yet (so they queue). === */
+    const items = [];
+    let lastTs = null;
+
+    function addMessage(user, color, text) {
+      const el = document.createElement("div");
+      el.className = "item";
+      el.innerHTML = `<span class="u" style="color:${color}">${esc(user)}</span><span class="m">${esc(text)}</span>`;
+      ticker.appendChild(el);
+      const w = el.offsetWidth;
+
+      let spawnX = ticker.clientWidth;
+      if (items.length) {
+        const last = items[items.length - 1];
+        spawnX = Math.max(spawnX, last.x + last.w + GAP);
+      }
+      // Drop if the queue has grown too long (spam protection) so latency stays sane.
+      if (spawnX > ticker.clientWidth * MAX_BACKLOG_FACTOR) { el.remove(); return; }
+
+      el.style.transform = `translateX(${spawnX}px)`;
+      items.push({ el, x: spawnX, w });
+    }
+
+    function frame(t) {
+      requestAnimationFrame(frame);
+      if (lastTs == null) { lastTs = t; return; }
+      const dx = SPEED * (t - lastTs) / 1000;
+      lastTs = t;
+      for (let i = items.length - 1; i >= 0; i--) {
+        const it = items[i];
+        it.x -= dx;
+        it.el.style.transform = `translateX(${it.x}px)`;
+        if (it.x + it.w < 0) { it.el.remove(); items.splice(i, 1); }
+      }
+    }
+    requestAnimationFrame(frame);
+
+    /* ===== Twitch chat (anonymous read-only IRC over WebSocket) ===== */
+    function connectIRC() {
+      if (!channel) return;
+      const ws = new WebSocket("wss://irc-ws.chat.twitch.tv:443");
+      ws.onopen = () => {
+        ws.send("CAP REQ :twitch.tv/tags");
+        ws.send("NICK justinfan" + (Math.floor(Math.random() * 99999) + 1));
+        ws.send("JOIN #" + channel);
+      };
+      ws.onmessage = (e) => {
+        for (const line of e.data.split("\r\n")) {
+          if (!line) continue;
+          if (line.startsWith("PING")) { ws.send("PONG :tmi.twitch.tv"); continue; }
+          if (!line.includes(" PRIVMSG ")) continue;
+
+          let tags = "", rest = line;
+          if (line[0] === "@") { const sp = line.indexOf(" "); tags = line.slice(1, sp); rest = line.slice(sp + 1); }
+
+          const pv = rest.indexOf(" PRIVMSG ");
+          const after = rest.slice(pv + 9);
+          if (!after.startsWith("#")) continue;
+          const c = after.indexOf(" :");
+          if (c === -1) continue;
+          const text = after.slice(c + 2).trim();
+          if (!text) continue;
+
+          const dn  = (tags.match(/display-name=([^;]+)/) || [])[1] || (rest.match(/^:(\w+)!/) || [])[1] || "?";
+          const col = (tags.match(/color=(#[0-9A-Fa-f]{6})/) || [])[1] || hashColor(dn);
+          addMessage(dn, col, text);
+        }
+      };
+      ws.onclose = () => setTimeout(connectIRC, 3000);
+      ws.onerror = () => ws.close();
+    }
+    connectIRC();
+  </script>
+</body>
+</html>
