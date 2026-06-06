@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Bike computer overlay</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  html,body{height:100%;margin:0;background:transparent;overflow:hidden;
+    font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  #wrap{height:100%;width:100%;display:flex;align-items:center;justify-content:center}
+  /* Device — scales with the OBS source height; portrait like a Karoo. */
+  #device{height:96vh;aspect-ratio:62/100;background:#0c0d10;border-radius:30px;
+    padding:14px 12px;box-sizing:border-box;display:flex;flex-direction:column;
+    box-shadow:0 10px 40px rgba(0,0,0,.55), inset 0 0 0 2px #1c1f26}
+  #screen{flex:1;background:#fff;border-radius:14px;overflow:hidden;display:flex;flex-direction:column;position:relative}
+  #brand{color:#7a8089;text-align:center;font-size:13px;font-weight:800;letter-spacing:3px;padding:7px 0 2px}
+
+  #topbar{display:flex;justify-content:space-between;align-items:center;
+    padding:7px 14px;color:#0c0d10;font-weight:700;font-size:18px;
+    font-variant-numeric:tabular-nums}
+
+  #cards{display:flex;gap:8px;padding:6px 8px 8px}
+  .card{flex:1;border:1px solid #e6e8eb;border-radius:12px;padding:7px 12px}
+  .card .lbl{display:flex;align-items:center;justify-content:space-between;
+    color:#8b919a;font-size:13px;font-weight:700;letter-spacing:1px}
+  .card .lbl svg{width:16px;height:16px}
+  .card .val{color:#0c0d10;font-weight:800;font-size:46px;line-height:1.05;
+    font-variant-numeric:tabular-nums;margin-top:2px}
+  .card .val .unit{font-size:16px;font-weight:700;color:#8b919a;margin-left:4px}
+
+  #mapwrap{flex:1;position:relative}
+  #map{height:100%;width:100%;background:#e9e7e2}
+  .leaflet-control-attribution{font-size:9px}
+  #arrow{position:absolute;top:50%;left:50%;z-index:600;pointer-events:none;
+    transform:translate(-50%,-50%)}
+  #arrow svg{filter:drop-shadow(0 2px 4px rgba(0,0,0,.5))}
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="device">
+      <div id="screen">
+        <div id="topbar"><span id="elapsed">0:00:00</span><span id="clock">--:--</span></div>
+        <div id="cards">
+          <div class="card">
+            <div class="lbl"><span>SPEED</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="#8b919a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 2 4 14 12 14 11 22 20 10 12 10 13 2"/></svg>
+            </div>
+            <div class="val"><span id="speed">0.0</span><span class="unit" id="speedUnit">mph</span></div>
+          </div>
+          <div class="card">
+            <div class="lbl"><span>DISTANCE</span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="#8b919a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8 18 H14 a4 4 0 0 0 0-8 H10 a4 4 0 0 1 0-8"/></svg>
+            </div>
+            <div class="val"><span id="dist">0.0</span><span class="unit" id="distUnit">mi</span></div>
+          </div>
+        </div>
+        <div id="mapwrap">
+          <div id="map"></div>
+          <div id="arrow">
+            <svg width="34" height="34" viewBox="-17 -17 34 34">
+              <polygon points="0,-14 11,12 0,6 -11,12" fill="#ffc400" stroke="#222" stroke-width="2" stroke-linejoin="round"/>
+            </svg>
+          </div>
+        </div>
+      </div>
+      <div id="brand">SLIPSTREAMIRL</div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    /* ===== CONFIG ===== */
+    const RELAY_URL = location.origin.replace(/^http/, "ws");
+    const ZOOM = 16;
+    const units = (new URLSearchParams(location.search).get("units") || "imperial").toLowerCase();
+    const METRIC = units === "metric" || units === "km";
+    /* ================== */
+
+    document.getElementById("speedUnit").textContent = METRIC ? "km/h" : "mph";
+    document.getElementById("distUnit").textContent  = METRIC ? "km" : "mi";
+    const toSpeed = ms => ms * (METRIC ? 3.6 : 2.23694);
+    const toDist  = m  => m  / (METRIC ? 1000 : 1609.34);
+
+    const map = L.map("map", { zoomControl:false, attributionControl:true }).setView([0,0], ZOOM);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: "&copy; OpenStreetMap"
+    }).addTo(map);
+
+    const arrowSvg = document.querySelector("#arrow svg");
+    const elSpeed = document.getElementById("speed");
+    const elDist  = document.getElementById("dist");
+    const elElapsed = document.getElementById("elapsed");
+    const elClock = document.getElementById("clock");
+    let gotFix = false, startTs = null;
+
+    function place(lat, lng, hdg) {
+      const ll = [lat, lng];
+      if (!gotFix) map.setView(ll, ZOOM);
+      else map.panTo(ll, { animate:true, duration:.6 });
+      gotFix = true;
+      const rot = (typeof hdg === "number" && hdg >= 0) ? hdg : 0;
+      arrowSvg.style.transform = `rotate(${rot}deg)`;
+    }
+
+    function setSpeed(ms) { elSpeed.textContent = toSpeed(ms || 0).toFixed(1); }
+    function setDist(m)   { elDist.textContent  = toDist(m || 0).toFixed(1); }
+
+    // Top-bar clock + ride elapsed timer.
+    function two(n){ return (n < 10 ? "0" : "") + n; }
+    setInterval(() => {
+      const d = new Date();
+      elClock.textContent = d.getHours() + ":" + two(d.getMinutes());
+      if (startTs) {
+        let s = Math.floor((Date.now() - startTs) / 1000);
+        const h = Math.floor(s / 3600); s -= h * 3600;
+        const m = Math.floor(s / 60); s -= m * 60;
+        elElapsed.textContent = h + ":" + two(m) + ":" + two(s);
+      }
+    }, 1000);
+
+    function connect() {
+      const ws = new WebSocket(RELAY_URL + "?role=overlay");
+      ws.onmessage = (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          if (d.hidden) { setSpeed(0); return; }   // in privacy zone: paused
+          if (typeof d.lat === "number") {
+            if (!startTs) startTs = Date.now();
+            place(d.lat, d.lng, d.hdg);
+            setSpeed(d.spd);
+            setDist(d.dist);
+          }
+        } catch {}
+      };
+      ws.onclose = () => setTimeout(connect, 2000);
+      ws.onerror = () => ws.close();
+    }
+    connect();
+  </script>
+</body>
+</html>

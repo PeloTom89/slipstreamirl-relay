@@ -30,12 +30,14 @@ const PAGES = {
   "/": "golive.html",
   "/overlay": "overlay.html",
   "/chat": "chat.html",
+  "/karoo": "karoo.html",
 };
 
 function broadcast(loc) {
   lastLocation = loc.hidden
     ? { hidden: true, ts: Date.now() }
-    : { lat: loc.lat, lng: loc.lng, acc: loc.acc ?? null, hdg: loc.hdg ?? null, ts: Date.now() };
+    : { lat: loc.lat, lng: loc.lng, acc: loc.acc ?? null, hdg: loc.hdg ?? null,
+        spd: loc.spd ?? null, dist: loc.dist ?? null, ts: Date.now() };
   const payload = JSON.stringify(lastLocation);
   for (const o of overlays) if (o.readyState === o.OPEN) o.send(payload, () => {});
 }
