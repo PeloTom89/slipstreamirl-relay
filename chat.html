@@ -94,19 +94,20 @@
       // Drop if the queue has grown too long (spam protection) so latency stays sane.
       if (spawnX > ticker.clientWidth * MAX_BACKLOG_FACTOR) { el.remove(); return; }
 
-      el.style.transform = `translateX(${spawnX}px)`;
+      el.style.transform = `translate3d(${spawnX}px,0,0)`;
       items.push({ el, x: spawnX, w });
     }
 
     function frame(t) {
       requestAnimationFrame(frame);
       if (lastTs == null) { lastTs = t; return; }
-      const dx = SPEED * (t - lastTs) / 1000;
+      const dt = Math.min((t - lastTs) / 1000, 0.05); // clamp so a hitch doesn't jump
       lastTs = t;
+      const dx = SPEED * dt;
       for (let i = items.length - 1; i >= 0; i--) {
         const it = items[i];
         it.x -= dx;
-        it.el.style.transform = `translateX(${it.x}px)`;
+        it.el.style.transform = `translate3d(${it.x}px,0,0)`;
         if (it.x + it.w < 0) { it.el.remove(); items.splice(i, 1); }
       }
     }
