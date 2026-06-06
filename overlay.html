@@ -132,7 +132,7 @@
     // wind.vx/vy: unit vector in the direction wind is blowing TO
     // wind.speed: pixels per frame
     let wind = null;
-    let sizeScale = 1; // makes wind speed + particle size resolution-independent
+    let motionScale = 1, drawScale = 1; // motion scales linearly (consistent speed); particle size sub-linearly (stays visible when small)
     const PARTICLE_COUNT = 120;
     const particles = [];
 
@@ -142,7 +142,7 @@
         canvas.width  = w;
         canvas.height = h;
       }
-      if (canvas.height) sizeScale = canvas.height / 700; // 700px tall = baseline look
+      if (canvas.height) { const r = canvas.height / 700; motionScale = r; drawScale = Math.sqrt(r); } // 700px tall = baseline
     }
     window.addEventListener("resize", resizeCanvas);
     resizeCanvas();
@@ -170,8 +170,8 @@
       const angle = Math.atan2(wind.vy, wind.vx);
 
       for (const p of particles) {
-        p.x += wind.vx * wind.speed * p.speedMult * sizeScale;
-        p.y += wind.vy * wind.speed * p.speedMult * sizeScale;
+        p.x += wind.vx * wind.speed * p.speedMult * motionScale;
+        p.y += wind.vy * wind.speed * p.speedMult * motionScale;
         p.age++;
 
         if (p.age > p.maxAge ||
@@ -182,7 +182,7 @@
         }
 
         const alpha = Math.sin(Math.PI * (p.age / p.maxAge)) * 0.8;
-        const s     = p.size * sizeScale;
+        const s     = p.size * drawScale;
         ctx.save();
         ctx.translate(p.x, p.y);
         ctx.rotate(angle);
