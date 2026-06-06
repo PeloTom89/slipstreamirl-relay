@@ -12,6 +12,12 @@
   .leaflet-container{border-radius:16px;box-shadow:0 0 0 2px rgba(255,255,255,.15)}
   #wind-canvas{position:absolute;top:0;left:0;width:100%;height:100%;
     pointer-events:none;z-index:500;border-radius:16px}
+  /* The rider marker is a fixed point at the map centre, layered ABOVE the wind
+     canvas so the particles never obscure it. The map pans beneath to follow. */
+  #me{position:absolute;top:50%;left:50%;z-index:600;pointer-events:none;display:none}
+  #me.on{display:block}
+  #halo,#icon{position:absolute;left:0;top:0;transform:translate(-50%,-50%)}
+  #me.stale #halo{display:none}
   .pulse-ring{width:40px;height:40px;border-radius:50%;border:3px solid #1a6abf;
     box-sizing:border-box;animation:pulse-ring 1.8s ease-out infinite}
   @keyframes pulse-ring{
@@ -32,6 +38,10 @@
   <div id="stage">
     <div id="map"></div>
     <canvas id="wind-canvas"></canvas>
+    <div id="me">
+      <div id="halo"><div class="pulse-ring"></div></div>
+      <div id="icon"></div>
+    </div>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
@@ -46,47 +56,23 @@
       attribution: '&copy; OpenStreetMap'
     }).addTo(map);
 
-    let marker = null, halo = null, gotFix = false;
-
-    const pulseIcon = L.divIcon({
-      className: "",
-      iconSize: [40, 40],
-      iconAnchor: [20, 20],
-      html: '<div class="pulse-ring"></div>'
-    });
-
-    const questionIcon = L.divIcon({
-      className: "",
-      iconSize: [34, 34],
-      iconAnchor: [17, 17],
-      html: '<div class="qmark">?</div>'
-    });
+    const me = document.getElementById("me");
+    const iconEl = document.getElementById("icon");
 
     // The app sends an explicit {hidden:true} heartbeat while inside the privacy
     // geofence -> show "?" immediately. STALE_MS is only a fallback for a true
     // silence (stream actually stopped). Coordinates arriving -> cyclist.
     const STALE_MS = 30000;
-    let staleTimer = null, stale = false, lastHdg = 0;
+    let staleTimer = null, stale = false, lastHdg = 0, gotFix = false;
 
     function armStale() {
       if (staleTimer) clearTimeout(staleTimer);
       staleTimer = setTimeout(() => setStale(true), STALE_MS);
     }
 
-    function setStale(s) {
-      if (s === stale || !marker) return;
-      stale = s;
-      if (s) { marker.setIcon(questionIcon); if (halo) halo.setOpacity(0); }
-      else   { marker.setIcon(makeIcon(lastHdg)); if (halo) halo.setOpacity(1); }
-    }
-
-    function makeIcon(hdg) {
+    function cyclistSVG(hdg) {
       const rot = (typeof hdg === "number" && hdg >= 0) ? hdg : 0;
-      return L.divIcon({
-        className: "",
-        iconSize: [26, 40],
-        iconAnchor: [13, 20],
-        html: `<svg width="26" height="40" viewBox="-22 -33 44 66"
+      return `<svg width="26" height="40" viewBox="-22 -33 44 66"
                  style="transform:rotate(${rot}deg);filter:drop-shadow(0 3px 7px rgba(0,0,0,.75))">
                <!-- Front wheel (top = direction of travel) -->
                <ellipse cx="0" cy="-27" rx="4.5" ry="11" fill="#111"/>
@@ -109,25 +95,29 @@
                <line x1="-4" y1="-18" x2="-4" y2="-11" stroke="#cccccc" stroke-width="1.2" stroke-linecap="round" opacity="0.7"/>
                <line x1="0"  y1="-19" x2="0"  y2="-11" stroke="#cccccc" stroke-width="1.2" stroke-linecap="round" opacity="0.7"/>
                <line x1="4"  y1="-18" x2="4"  y2="-11" stroke="#cccccc" stroke-width="1.2" stroke-linecap="round" opacity="0.7"/>
-               </svg>`
-      });
+               </svg>`;
+    }
+
+    function render() {
+      iconEl.innerHTML = stale ? '<div class="qmark">?</div>' : cyclistSVG(lastHdg);
+      me.classList.toggle("stale", stale);
+    }
+
+    function setStale(s) {
+      if (s === stale) return;
+      stale = s;
+      render();
     }
 
     function place(lat, lng, hdg) {
-      const ll = [lat, lng];
       lastHdg = hdg;
-      if (!marker) {
-        halo = L.marker(ll, { icon: pulseIcon, zIndexOffset: -1 }).addTo(map);
-        marker = L.marker(ll, { icon: makeIcon(hdg) }).addTo(map);
-        map.setView(ll, ZOOM);
-      } else {
-        halo.setLatLng(ll);
-        marker.setLatLng(ll);
-        if (!stale) marker.setIcon(makeIcon(hdg));
-        map.panTo(ll, { animate:true, duration:.6 });
-      }
+      const ll = [lat, lng];
+      if (!gotFix) map.setView(ll, ZOOM);
+      else map.panTo(ll, { animate:true, duration:.6 });
       gotFix = true;
-      setStale(false);
+      me.classList.add("on");
+      stale = false;
+      render();
       armStale();
     }
 
@@ -142,8 +132,6 @@
     const particles = [];
 
     function resizeCanvas() {
-      // Only size when the canvas actually has layout (it lives inside #stage,
-      // which starts hidden) — never clobber the bitmap to 0, or wind won't draw.
       const w = canvas.offsetWidth, h = canvas.offsetHeight;
       if (w && h && (canvas.width !== w || canvas.height !== h)) {
         canvas.width  = w;
