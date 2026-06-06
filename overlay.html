@@ -133,7 +133,7 @@
     // wind.speed: pixels per frame (scales with wind speed)
     let wind = null;
     let motionScale = 1, drawScale = 1;
-    let arrowOffset = null; // signed distance from canvas centre along wind direction
+    let arrowOffsets = null; // one signed offset per arrow, distance from canvas centre along wind direction
 
     function resizeCanvas() {
       const w = canvas.offsetWidth, h = canvas.offsetHeight;
@@ -152,39 +152,46 @@
       if (!wind || !gotFix) return;
 
       // Full sweep distance: enter from one edge of canvas, exit the other.
-      const travel = Math.sqrt(canvas.width ** 2 + canvas.height ** 2) * 0.65;
-      if (arrowOffset === null) arrowOffset = -travel;
+      const travel   = Math.sqrt(canvas.width ** 2 + canvas.height ** 2) * 0.65;
+      const numArrows = 3;
+      if (arrowOffsets === null) {
+        arrowOffsets = Array.from({length: numArrows}, (_, i) => -travel + i * (2 * travel / numArrows));
+      }
 
-      arrowOffset += wind.speed * 2 * motionScale;
-      if (arrowOffset > travel) arrowOffset = -travel;
-
-      const cx = canvas.width  / 2;
-      const cy = canvas.height / 2;
-      const x  = cx + wind.vx * arrowOffset;
-      const y  = cy + wind.vy * arrowOffset;
-
-      // Fade in as arrow approaches the icon, peak at centre, fade out after.
-      const fadeZone = travel * 0.38;
-      const t = (arrowOffset + fadeZone) / (2 * fadeZone);
-      const alpha = (t >= 0 && t <= 1) ? Math.sin(Math.PI * t) * 0.95 : 0;
+      const cx    = canvas.width  / 2;
+      const cy    = canvas.height / 2;
       const angle = Math.atan2(wind.vy, wind.vx);
       const s     = 22 * drawScale;
+      // Fade starts this far from centre on each side — closer = tighter halo around icon.
+      const fadeZone = travel * 0.25;
 
-      ctx.save();
-      ctx.translate(x, y);
-      ctx.rotate(angle);
-      ctx.globalAlpha = Math.max(0, alpha);
-      ctx.fillStyle   = "#5b9cf6";
-      ctx.shadowColor = "rgba(30,80,200,0.5)";
-      ctx.shadowBlur  = 8;
-      ctx.beginPath();
-      ctx.moveTo( s,          0);
-      ctx.lineTo(-s * 0.5, -s * 0.55);
-      ctx.lineTo(-s * 0.2,    0);
-      ctx.lineTo(-s * 0.5,  s * 0.55);
-      ctx.closePath();
-      ctx.fill();
-      ctx.restore();
+      for (let i = 0; i < numArrows; i++) {
+        arrowOffsets[i] += wind.speed * 2 * motionScale;
+        if (arrowOffsets[i] > travel) arrowOffsets[i] = -travel;
+
+        const t     = (arrowOffsets[i] + fadeZone) / (2 * fadeZone);
+        const alpha = (t >= 0 && t <= 1) ? Math.sin(Math.PI * t) * 0.95 : 0;
+        if (alpha <= 0) continue;
+
+        const x = cx + wind.vx * arrowOffsets[i];
+        const y = cy + wind.vy * arrowOffsets[i];
+
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(angle);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle   = "#5b9cf6";
+        ctx.shadowColor = "rgba(30,80,200,0.5)";
+        ctx.shadowBlur  = 8;
+        ctx.beginPath();
+        ctx.moveTo( s,          0);
+        ctx.lineTo(-s * 0.5, -s * 0.55);
+        ctx.lineTo(-s * 0.2,    0);
+        ctx.lineTo(-s * 0.5,  s * 0.55);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
       ctx.globalAlpha = 1;
     }
     animateWind();
