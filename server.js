@@ -43,6 +43,10 @@ function broadcast(loc) {
     // Wind on/off toggle — remember it so freshly-opened overlays sync.
     lastWind = loc.wind;
     payload = JSON.stringify({ wind: loc.wind, ts: Date.now() });
+  } else if (typeof loc.units === "string") {
+    // Units preference (imperial/metric) — remember for late-joining overlays.
+    lastUnits = loc.units;
+    payload = JSON.stringify({ units: loc.units, ts: Date.now() });
   } else if (loc.hidden) {
     lastLocation = { hidden: true, ts: Date.now() };
     payload = JSON.stringify(lastLocation);
@@ -163,7 +167,7 @@ const server = http.createServer((req, res) => {
       // A {hidden:true} heartbeat (privacy geofence), {offline:true} signal
       // (stream stopped), or {wind:bool} toggle is allowed without coordinates;
       // otherwise lat/lng are required.
-      const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean";
+      const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean" || typeof msg.units === "string";
       if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) {
         res.writeHead(400); res.end("bad coords"); return;
       }
@@ -196,6 +200,7 @@ const wss = new WebSocketServer({ server });
 const overlays = new Set();
 let lastLocation = null; // cached so a freshly-opened overlay snaps to current position
 let lastWind = null;     // cached wind on/off so a freshly-opened overlay syncs
+let lastUnits = null;    // cached units pref so a freshly-opened overlay syncs
 
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url, "http://x");
@@ -206,6 +211,7 @@ wss.on("connection", (ws, req) => {
     overlays.add(ws);
     ws.on("error", () => {});
     if (lastWind !== null) ws.send(JSON.stringify({ wind: lastWind }));
+    if (lastUnits !== null) ws.send(JSON.stringify({ units: lastUnits }));
     if (lastLocation) ws.send(JSON.stringify(lastLocation));
     ws.on("close", () => overlays.delete(ws));
     return;
@@ -217,7 +223,7 @@ wss.on("connection", (ws, req) => {
     ws.on("message", (buf) => {
       let msg;
       try { msg = JSON.parse(buf.toString()); } catch { return; }
-      const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean";
+      const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean" || typeof msg.units === "string";
       if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) return;
       broadcast(msg);
     });
