@@ -14,12 +14,13 @@
   .embed .leaflet-container{border-radius:0;box-shadow:none}
   #wind-canvas{position:absolute;top:0;left:0;width:100%;height:100%;
     pointer-events:none;z-index:500;border-radius:16px}
-  /* The rider marker is a fixed point at the map centre, layered ABOVE the wind
-     canvas so the particles never obscure it. The map pans beneath to follow. */
-  #me{position:absolute;top:50%;left:50%;z-index:600;pointer-events:none;display:none}
-  #me.on{display:block}
-  #halo,#icon{position:absolute;left:0;top:0;transform:translate(-50%,-50%)}
-  #me.stale #halo{display:none}
+  /* The rider marker is a real Leaflet marker glued to the rider's coordinates,
+     so the map can be panned freely without detaching the icon from its true
+     position. The halo/icon are centred on the marker's anchor point. */
+  .me-wrap{position:absolute;left:0;top:0;pointer-events:none}
+  .me-halo,.me-icon{position:absolute;left:0;top:0;transform:translate(-50%,-50%)}
+  .me-wrap.stale .me-halo{display:none}
+  .leaflet-marker-icon.me-marker{background:none;border:none}
   .pulse-ring{width:40px;height:40px;border-radius:50%;border:3px solid #1a6abf;
     box-sizing:border-box;animation:pulse-ring 1.8s ease-out infinite}
   @keyframes pulse-ring{
@@ -40,10 +41,6 @@
   <div id="stage">
     <div id="map"></div>
     <canvas id="wind-canvas"></canvas>
-    <div id="me">
-      <div id="halo"><div class="pulse-ring"></div></div>
-      <div id="icon"></div>
-    </div>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
@@ -60,14 +57,12 @@
       attribution: '&copy; OpenStreetMap'
     }).addTo(map);
 
-    const me = document.getElementById("me");
-    const iconEl = document.getElementById("icon");
-
     // The app sends an explicit {hidden:true} heartbeat while inside the privacy
     // geofence -> show "?" immediately. STALE_MS is only a fallback for a true
     // silence (stream actually stopped). Coordinates arriving -> cyclist.
     const STALE_MS = 30000;
     let staleTimer = null, stale = false, lastHdg = 0, gotFix = false;
+    let marker = null, markerLL = null;
 
     function armStale() {
       if (staleTimer) clearTimeout(staleTimer);
@@ -102,9 +97,20 @@
                </svg>`;
     }
 
+    function iconHtml() {
+      const inner = stale ? '<div class="qmark">?</div>' : cyclistSVG(lastHdg);
+      return `<div class="me-wrap${stale ? " stale" : ""}">` +
+               `<div class="me-halo"><div class="pulse-ring"></div></div>` +
+               `<div class="me-icon">${inner}</div>` +
+             `</div>`;
+    }
+
+    function makeDivIcon() {
+      return L.divIcon({ className: "me-marker", html: iconHtml(), iconSize: [0, 0], iconAnchor: [0, 0] });
+    }
+
     function render() {
-      iconEl.innerHTML = stale ? '<div class="qmark">?</div>' : cyclistSVG(lastHdg);
-      me.classList.toggle("stale", stale);
+      if (marker) marker.setIcon(makeDivIcon());
     }
 
     function setStale(s) {
@@ -118,18 +124,20 @@
       staleTimer = null;
       stale = false;
       gotFix = false;
-      me.classList.remove("on");
+      if (marker) { map.removeLayer(marker); marker = null; markerLL = null; }
     }
 
     function place(lat, lng, hdg) {
       lastHdg = hdg;
-      const ll = [lat, lng];
-      if (!gotFix) map.setView(ll, ZOOM);
-      else map.panTo(ll, { animate:true, duration:.6 });
+      markerLL = [lat, lng];
+      // Marker stays glued to the rider's coordinates; the map pans to follow but
+      // can be dragged freely without the icon leaving its true position.
+      if (!gotFix) map.setView(markerLL, ZOOM);
+      else map.panTo(markerLL, { animate:true, duration:.6 });
       gotFix = true;
-      me.classList.add("on");
       stale = false;
-      render();
+      if (!marker) marker = L.marker(markerLL, { icon: makeDivIcon(), interactive: false, keyboard: false }).addTo(map);
+      else { marker.setLatLng(markerLL); marker.setIcon(makeDivIcon()); }
       armStale();
     }
 
@@ -166,8 +174,13 @@
         arrowOffsets = Array.from({length: numArrows}, (_, i) => -travel + i * (2 * travel / numArrows));
       }
 
-      const cx    = canvas.width  / 2;
-      const cy    = canvas.height / 2;
+      // Centre the wind on the rider's actual screen position so it stays glued
+      // to the marker even when the map is panned.
+      let cx = canvas.width / 2, cy = canvas.height / 2;
+      if (markerLL) {
+        const p = map.latLngToContainerPoint(markerLL);
+        cx = p.x; cy = p.y;
+      }
       const angle = Math.atan2(wind.vy, wind.vx);
       const s     = 22 * drawScale;
       // Fade starts this far from centre on each side — closer = tighter halo around icon.
