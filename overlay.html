@@ -27,13 +27,6 @@
     0%  {transform:scale(0.6);opacity:0.9}
     100%{transform:scale(2.2);opacity:0}
   }
-  #stats{position:absolute;left:12px;bottom:12px;z-index:550;display:none;
-    gap:14px;flex-direction:row;font-family:-apple-system,Segoe UI,sans-serif}
-  #stats.on{display:flex}
-  .stat{background:rgba(10,11,13,.72);border-radius:10px;padding:6px 12px;
-    box-shadow:0 2px 8px rgba(0,0,0,.5);display:flex;align-items:baseline;gap:4px}
-  .stat-v{color:#fff;font-size:22px;font-weight:800;line-height:1}
-  .stat-u{color:#9aa4b2;font-size:11px;font-weight:700}
   .qmark{width:34px;height:34px;border-radius:50%;background:rgba(15,23,38,.88);
     border:2px solid #4d96ff;color:#cfe0ff;text-align:center;
     font:800 20px/31px -apple-system,Segoe UI,sans-serif;
@@ -48,10 +41,6 @@
   <div id="stage">
     <div id="map"></div>
     <canvas id="wind-canvas"></canvas>
-    <div id="stats">
-      <div class="stat"><span class="stat-v" id="stat-spd">0.0</span><span class="stat-u" id="stat-spd-u">mph</span></div>
-      <div class="stat"><span class="stat-v" id="stat-dist">0.00</span><span class="stat-u" id="stat-dist-u">mi</span></div>
-    </div>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
@@ -64,9 +53,6 @@
     if (params.get("embed")) document.documentElement.classList.add("embed");
     // Wind arrows default on; ?wind=off disables them (in-app toggle can override live).
     let windEnabled = params.get("wind") !== "off";
-    // Units default imperial; ?units=metric or a live {units} message overrides.
-    let units = params.get("units") === "metric" ? "metric" : "imperial";
-    let lastDistM = 0, lastSpdMs = 0;
 
     const map = L.map("map", { zoomControl:false, attributionControl:true }).setView([0,0], ZOOM);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -80,18 +66,6 @@
     const STALE_MS = 30000;
     let staleTimer = null, stale = false, lastHdg = 0, gotFix = false;
     let marker = null, markerLL = null;
-
-    const statsEl = document.getElementById("stats");
-    function renderStats() {
-      if (!gotFix) { statsEl.classList.remove("on"); return; }
-      const spd = units === "metric" ? lastSpdMs * 3.6 : lastSpdMs * 2.23694;
-      const dist = units === "metric" ? lastDistM / 1000 : lastDistM / 1609.34;
-      document.getElementById("stat-spd").textContent = spd.toFixed(1);
-      document.getElementById("stat-spd-u").textContent = units === "metric" ? "km/h" : "mph";
-      document.getElementById("stat-dist").textContent = dist.toFixed(2);
-      document.getElementById("stat-dist-u").textContent = units === "metric" ? "km" : "mi";
-      statsEl.classList.add("on");
-    }
 
     function armStale() {
       if (staleTimer) clearTimeout(staleTimer);
@@ -154,7 +128,6 @@
       stale = false;
       gotFix = false;
       if (marker) { map.removeLayer(marker); marker = null; markerLL = null; }
-      statsEl.classList.remove("on");
     }
 
     function place(lat, lng, hdg) {
@@ -274,14 +247,10 @@
         try {
           const d = JSON.parse(e.data);
           if (typeof d.wind === "boolean") { windEnabled = d.wind; }
-          if (typeof d.units === "string") { units = d.units; renderStats(); }
           if (d.offline) { goOffline(); return; }
           if (d.hidden) { setStale(true); armStale(); return; }
           if (typeof d.lat === "number") {
             place(d.lat, d.lng, d.hdg);
-            if (typeof d.spd === "number") lastSpdMs = d.spd;
-            if (typeof d.dist === "number") lastDistM = d.dist;
-            renderStats();
             // Refresh wind data at most once every 10 minutes.
             const now = Date.now();
             if (now - lastWindFetch > 10 * 60 * 1000) {
