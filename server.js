@@ -47,6 +47,10 @@ function broadcast(loc) {
     // Units preference (imperial/metric) — remember for late-joining overlays.
     lastUnits = loc.units;
     payload = JSON.stringify({ units: loc.units, ts: Date.now() });
+  } else if ("power" in loc || "cadence" in loc || "hr" in loc) {
+    // BLE sensor values (power/cadence/heart rate) — cache for late overlays.
+    lastSensors = { power: loc.power ?? null, cadence: loc.cadence ?? null, hr: loc.hr ?? null };
+    payload = JSON.stringify({ ...lastSensors, ts: Date.now() });
   } else if (loc.hidden) {
     lastLocation = { hidden: true, ts: Date.now() };
     payload = JSON.stringify(lastLocation);
@@ -167,7 +171,8 @@ const server = http.createServer((req, res) => {
       // A {hidden:true} heartbeat (privacy geofence), {offline:true} signal
       // (stream stopped), or {wind:bool} toggle is allowed without coordinates;
       // otherwise lat/lng are required.
-      const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean" || typeof msg.units === "string";
+      const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean" || typeof msg.units === "string"
+        || "power" in msg || "cadence" in msg || "hr" in msg;
       if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) {
         res.writeHead(400); res.end("bad coords"); return;
       }
@@ -201,6 +206,7 @@ const overlays = new Set();
 let lastLocation = null; // cached so a freshly-opened overlay snaps to current position
 let lastWind = null;     // cached wind on/off so a freshly-opened overlay syncs
 let lastUnits = null;    // cached units pref so a freshly-opened overlay syncs
+let lastSensors = null;  // cached power/cadence/hr so a freshly-opened overlay syncs
 
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url, "http://x");
@@ -212,6 +218,7 @@ wss.on("connection", (ws, req) => {
     ws.on("error", () => {});
     if (lastWind !== null) ws.send(JSON.stringify({ wind: lastWind }));
     if (lastUnits !== null) ws.send(JSON.stringify({ units: lastUnits }));
+    if (lastSensors) ws.send(JSON.stringify(lastSensors));
     if (lastLocation) ws.send(JSON.stringify(lastLocation));
     ws.on("close", () => overlays.delete(ws));
     return;
@@ -223,7 +230,8 @@ wss.on("connection", (ws, req) => {
     ws.on("message", (buf) => {
       let msg;
       try { msg = JSON.parse(buf.toString()); } catch { return; }
-      const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean" || typeof msg.units === "string";
+      const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean" || typeof msg.units === "string"
+        || "power" in msg || "cadence" in msg || "hr" in msg;
       if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) return;
       broadcast(msg);
     });
