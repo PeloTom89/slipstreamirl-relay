@@ -11,7 +11,11 @@
   /* One base unit tied to source height (font-size:vh); everything below is em,
      so the whole device — including the SPEED/DISTANCE cards — scales with the
      OBS source size. */
-  #device{height:96vh;aspect-ratio:62/100;font-size:2.2vh;background:#0c0d10;
+  /* Fit within the container by whichever dimension binds (height in a wide OBS
+     source, width in the app's tall narrow popout). Font scales the same way so
+     the contents never overflow the device. 59.52vh = 96vh * 62/100. */
+  #device{width:min(96vw, 59.52vh);aspect-ratio:62/100;font-size:min(2.2vh, 3.55vw);
+    background:#0c0d10;
     border-radius:1.6em;padding:0.8em 0.7em;box-sizing:border-box;
     display:flex;flex-direction:column;
     box-shadow:0 10px 40px rgba(0,0,0,.55), inset 0 0 0 2px #1c1f26}
