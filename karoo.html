@@ -27,13 +27,20 @@
     font-variant-numeric:tabular-nums}
 
   #cards{display:flex;gap:0.5em;padding:0.35em 0.5em 0.5em}
-  .card{flex:1;border:1px solid #e6e8eb;border-radius:0.6em;padding:0.4em 0.7em}
+  .card{flex:1;border:1px solid #e6e8eb;border-radius:0.6em;padding:0.4em 0.7em;
+    transition:background-color .25s ease}
   .card .lbl{display:flex;align-items:center;justify-content:space-between;
     color:#8b919a;font-size:0.72em;font-weight:700;letter-spacing:0.06em}
   .card .lbl svg{width:1.2em;height:1.2em}
   .card .val{color:#0c0d10;font-weight:800;font-size:2.5em;line-height:1.05;
     font-variant-numeric:tabular-nums;margin-top:0.05em}
   .card .val .unit{font-size:0.4em;font-weight:700;color:#8b919a;margin-left:0.3em}
+  /* When a zone color is applied, all card text/icons follow the card color. */
+  .card.zoned{border-color:transparent}
+  .card.zoned .lbl{color:currentColor;opacity:.85}
+  .card.zoned .lbl svg{stroke:currentColor}
+  .card.zoned .val{color:currentColor}
+  .card.zoned .val .unit{color:currentColor;opacity:.8}
 
   /* Map is the real /overlay page embedded, so cyclist + wind + "?" all carry over. */
   #mapwrap{flex:1;position:relative;background:#e9e7e2}
@@ -102,17 +109,65 @@
     const elClock = document.getElementById("clock");
     let startTs = null;
     let lastSpdMs = 0, lastDistM = 0;
+    let lastPower = null, lastCadence = null, lastHr = null;
+
+    // Effort zones: anchors come from the app; cards tint green→purple by effort.
+    let zones = null; // {ftp, lthr, cadence, speed(m/s)}
+    const ZONE_BG = ["#1f9d57", "#e6b800", "#e07b1a", "#d8392b", "#7d3cc9"];
+    const ZONE_FG = ["#ffffff", "#1a1a1a", "#ffffff", "#ffffff", "#ffffff"];
+
+    // Returns 0..4 (green..purple) or -1 when not computable.
+    function zoneIndex(metric, value) {
+      if (!zones || value == null) return -1;
+      if (metric === "power" && zones.ftp) {
+        const f = zones.ftp;
+        return value < f*0.55 ? 0 : value < f*0.76 ? 1 : value < f*0.91 ? 2 : value < f*1.06 ? 3 : 4;
+      }
+      if (metric === "hr" && zones.lthr) {
+        // Below threshold: fractions of LTHR. Above: interpolate toward max HR,
+        // so red = threshold→midpoint, purple = midpoint→max.
+        const l = zones.lthr, mx = zones.maxhr || l * 1.1;
+        const mid = l + (mx - l) * 0.5;
+        return value < l*0.85 ? 0 : value < l*0.92 ? 1 : value < l ? 2 : value < mid ? 3 : 4;
+      }
+      if (metric === "cadence" && zones.cadence) {
+        const a = zones.cadence;
+        return value < a*0.82 ? 0 : value < a ? 1 : value < a*1.18 ? 2 : value < a*1.29 ? 3 : 4;
+      }
+      if (metric === "speed" && zones.speed) { // value + anchor both m/s
+        const s = zones.speed;
+        return value < s*0.44 ? 0 : value < s*0.64 ? 1 : value < s*0.84 ? 2 : value < s*1.2 ? 3 : 4;
+      }
+      return -1;
+    }
+
+    function colorCard(id, metric, value) {
+      const el = document.getElementById(id);
+      const card = el.closest(".card");
+      const z = zoneIndex(metric, value);
+      if (z < 0) { card.classList.remove("zoned"); card.style.background = ""; card.style.color = ""; return; }
+      card.classList.add("zoned");
+      card.style.background = ZONE_BG[z];
+      card.style.color = ZONE_FG[z];
+    }
+
+    function recolorAll() {
+      colorCard("speed", "speed", lastSpdMs);
+      colorCard("power", "power", lastPower);
+      colorCard("cadence", "cadence", lastCadence);
+      colorCard("hr", "hr", lastHr);
+    }
 
     function setSensors(d) {
-      if (d.power != null)   elPower.textContent   = Math.round(d.power);
-      if (d.cadence != null) elCadence.textContent = Math.round(d.cadence);
-      if (d.hr != null)      elHr.textContent      = Math.round(d.hr);
+      if (d.power != null)   { lastPower = d.power;     elPower.textContent   = Math.round(d.power);   colorCard("power", "power", lastPower); }
+      if (d.cadence != null) { lastCadence = d.cadence; elCadence.textContent = Math.round(d.cadence); colorCard("cadence", "cadence", lastCadence); }
+      if (d.hr != null)      { lastHr = d.hr;           elHr.textContent      = Math.round(d.hr);      colorCard("hr", "hr", lastHr); }
     }
 
     const toSpeed = ms => ms * (METRIC ? 3.6 : 2.23694);
     const toDist  = m  => m  / (METRIC ? 1000 : 1609.34);
 
-    function setSpeed(ms) { lastSpdMs = ms || 0; elSpeed.textContent = toSpeed(lastSpdMs).toFixed(1); }
+    function setSpeed(ms) { lastSpdMs = ms || 0; elSpeed.textContent = toSpeed(lastSpdMs).toFixed(1); colorCard("speed", "speed", lastSpdMs); }
     function setDist(m)   { lastDistM = m  || 0; elDist.textContent  = toDist(lastDistM).toFixed(1); }
 
     function applyUnits() {
@@ -145,6 +200,7 @@
         try {
           const d = JSON.parse(e.data);
           if (typeof d.units === "string") { units = d.units; METRIC = units === "metric" || units === "km"; applyUnits(); }
+          if (d.zones) { zones = d.zones; recolorAll(); return; }
           if ("power" in d || "cadence" in d || "hr" in d) { setSensors(d); return; }
           if (d.offline) { setSpeed(0); return; }   // stream ended
           if (d.hidden) { setSpeed(0); return; }    // in privacy zone: paused
