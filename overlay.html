@@ -49,7 +49,10 @@
     const ZOOM = 16;
     /* ================== */
 
-    if (new URLSearchParams(location.search).get("embed")) document.documentElement.classList.add("embed");
+    const params = new URLSearchParams(location.search);
+    if (params.get("embed")) document.documentElement.classList.add("embed");
+    // Wind arrows default on; ?wind=off disables them (in-app toggle can override live).
+    let windEnabled = params.get("wind") !== "off";
 
     const map = L.map("map", { zoomControl:false, attributionControl:true }).setView([0,0], ZOOM);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -165,7 +168,7 @@
     function animateWind() {
       requestAnimationFrame(animateWind);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      if (!wind || !gotFix) return;
+      if (!windEnabled || !wind || !gotFix) return;
 
       // Full sweep distance: enter from one edge of canvas, exit the other.
       const travel   = Math.sqrt(canvas.width ** 2 + canvas.height ** 2) * 0.65;
@@ -243,6 +246,7 @@
       ws.onmessage = (e) => {
         try {
           const d = JSON.parse(e.data);
+          if (typeof d.wind === "boolean") { windEnabled = d.wind; }
           if (d.offline) { goOffline(); return; }
           if (d.hidden) { setStale(true); armStale(); return; }
           if (typeof d.lat === "number") {

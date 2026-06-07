@@ -148,9 +148,11 @@ const server = http.createServer((req, res) => {
     req.on("end", () => {
       let msg;
       try { msg = JSON.parse(body); } catch { res.writeHead(400); res.end("bad json"); return; }
-      // A {hidden:true} heartbeat (privacy geofence) or {offline:true} signal
-      // (stream stopped) is allowed without coordinates; else lat/lng required.
-      if (!msg.hidden && !msg.offline && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) {
+      // A {hidden:true} heartbeat (privacy geofence), {offline:true} signal
+      // (stream stopped), or {wind:bool} toggle is allowed without coordinates;
+      // otherwise lat/lng are required.
+      const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean";
+      if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) {
         res.writeHead(400); res.end("bad coords"); return;
       }
       broadcast(msg);
