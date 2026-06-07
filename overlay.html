@@ -54,10 +54,9 @@
     // Wind arrows default on; ?wind=off disables them (in-app toggle can override live).
     let windEnabled = params.get("wind") !== "off";
 
-    const map = L.map("map", { zoomControl:false, attributionControl:true }).setView([0,0], ZOOM);
+    const map = L.map("map", { zoomControl:false, attributionControl:false }).setView([0,0], ZOOM);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19,
-      attribution: '&copy; OpenStreetMap'
     }).addTo(map);
 
     // The app sends an explicit {hidden:true} heartbeat while inside the privacy
