@@ -64,23 +64,32 @@
   <script>
     /* ===== CONFIG ===== */
     const RELAY_URL = location.origin.replace(/^http/, "ws");
-    const units = (new URLSearchParams(location.search).get("units") || "imperial").toLowerCase();
-    const METRIC = units === "metric" || units === "km";
+    // ?units sets the initial state; a live {units} message from the app overrides.
+    let units = (new URLSearchParams(location.search).get("units") || "imperial").toLowerCase();
+    let METRIC = units === "metric" || units === "km";
     /* ================== */
-
-    document.getElementById("speedUnit").textContent = METRIC ? "km/h" : "mph";
-    document.getElementById("distUnit").textContent  = METRIC ? "km" : "mi";
-    const toSpeed = ms => ms * (METRIC ? 3.6 : 2.23694);
-    const toDist  = m  => m  / (METRIC ? 1000 : 1609.34);
 
     const elSpeed = document.getElementById("speed");
     const elDist  = document.getElementById("dist");
     const elElapsed = document.getElementById("elapsed");
     const elClock = document.getElementById("clock");
     let startTs = null;
+    let lastSpdMs = 0, lastDistM = 0;
 
-    function setSpeed(ms) { elSpeed.textContent = toSpeed(ms || 0).toFixed(1); }
-    function setDist(m)   { elDist.textContent  = toDist(m || 0).toFixed(1); }
+    const toSpeed = ms => ms * (METRIC ? 3.6 : 2.23694);
+    const toDist  = m  => m  / (METRIC ? 1000 : 1609.34);
+
+    function setSpeed(ms) { lastSpdMs = ms || 0; elSpeed.textContent = toSpeed(lastSpdMs).toFixed(1); }
+    function setDist(m)   { lastDistM = m  || 0; elDist.textContent  = toDist(lastDistM).toFixed(1); }
+
+    function applyUnits() {
+      document.getElementById("speedUnit").textContent = METRIC ? "km/h" : "mph";
+      document.getElementById("distUnit").textContent  = METRIC ? "km" : "mi";
+      // Re-render last known values in the new units.
+      elSpeed.textContent = toSpeed(lastSpdMs).toFixed(1);
+      elDist.textContent  = toDist(lastDistM).toFixed(1);
+    }
+    applyUnits();
 
     // Top-bar clock + ride elapsed timer.
     function two(n){ return (n < 10 ? "0" : "") + n; }
@@ -102,7 +111,9 @@
       ws.onmessage = (e) => {
         try {
           const d = JSON.parse(e.data);
-          if (d.hidden) { setSpeed(0); return; }   // in privacy zone: paused
+          if (typeof d.units === "string") { units = d.units; METRIC = units === "metric" || units === "km"; applyUnits(); }
+          if (d.offline) { setSpeed(0); return; }   // stream ended
+          if (d.hidden) { setSpeed(0); return; }    // in privacy zone: paused
           if (typeof d.lat === "number") {
             if (!startTs) startTs = Date.now();
             setSpeed(d.spd);
