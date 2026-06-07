@@ -17,32 +17,41 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## Later / ideas
 
-- [ ] **Multiple overlay layouts** (map-only, stats bar, karoo embed) — already
-      partly there (`/karoo`, `?embed`); make selectable/documented.
-- [ ] **Stats on overlay** — speed + distance readout (data is already pushed).
+- [ ] **Karoo as a Twitch Extension** — package `karoo.html` as a Video Overlay
+      extension (config + video_overlay pages, `twitch-ext.js`, relay URL in ext
+      config, tokenless read-only overlay role). Relay is already HTTPS.
+- [ ] **Tune effort-zone band cutoffs** — multipliers in `karoo.html` (`zoneIndex`).
 - [ ] **Wind source/units** — open-meteo km/h today; expose mph option.
 - [ ] **Health/status page** showing connected overlays + last fix age.
 
 ## Done (recent)
 
+- [x] **Karoo bike-computer cards** — speed, distance, 3s power, cadence, heart;
+      speedometer icon for speed, lightning for power.
+- [x] **Effort-zone colors** — value digits tint green→purple from `{zones}`
+      anchors (FTP, LTHR+maxHR, avg cadence, fast speed).
+- [x] **Units** — live `{units}` message + `?units` default; Karoo + map honor it.
 - [x] Marker glued to coordinates; stale `?` stays at last known location.
 - [x] `goOffline` hides marker on `{offline:true}`.
-- [x] `/push` accepts keyless control messages (`hidden`/`offline`/`wind`).
-- [x] `broadcast` no longer rebuilds/drops control messages; `wind` state cached
-      and sent to late-joining overlays.
-- [x] Wind arrows: `?wind=off` URL default + live `{wind:bool}` toggle.
+- [x] `broadcast` no longer drops control messages; all persistent state
+      (wind/units/sensors/zones/location) cached + replayed to late overlays.
 
 ## Protocol notes (keep in sync with the app)
 
 Messages the sender pushes via `POST /push?token=…`:
 
-| message            | meaning                          | needs lat/lng |
-|--------------------|----------------------------------|---------------|
-| `{lat,lng,acc,hdg,spd,dist}` | normal position fix     | yes           |
-| `{hidden:true}`    | inside privacy geofence          | no            |
-| `{offline:true}`   | stream ended — hide marker       | no            |
-| `{wind:bool}`      | wind arrows on/off               | no            |
+| message                       | meaning                       | needs lat/lng |
+|-------------------------------|-------------------------------|---------------|
+| `{lat,lng,acc,hdg,spd,dist}`  | normal position fix           | yes           |
+| `{hidden:true}`               | inside privacy geofence       | no            |
+| `{offline:true}`              | stream ended — hide marker    | no            |
+| `{wind:bool}`                 | wind arrows on/off            | no            |
+| `{units:"imperial"\|"metric"}`| units preference              | no            |
+| `{power,cadence,hr}`          | BLE sensor values             | no            |
+| `{zones:{ftp,lthr,maxhr,cadence,speed}}` | effort-zone anchors| no            |
 
 **Any new keyless message must be allowed in BOTH `/push` validation and
 `broadcast()`** — `broadcast()` rebuilds the payload, so unhandled fields are
-silently dropped (this was a real bug).
+silently dropped (this was a real bug). Persistent state is cached
+(`lastWind`/`lastUnits`/`lastSensors`/`lastZones`/`lastLocation`) and replayed on
+overlay connect.
