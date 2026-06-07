@@ -65,6 +65,9 @@
     const STALE_MS = 30000;
     let staleTimer = null, stale = false, lastHdg = 0, gotFix = false;
     let marker = null, markerLL = null;
+    // Position tween: GPS fixes arrive ~every 3s; we glide between them each frame
+    // so the rider + map move smoothly instead of snapping.
+    let animFrom = null, animTo = null, animStart = 0, animDur = 3000, lastFixMs = 0;
 
     function armStale() {
       if (staleTimer) clearTimeout(staleTimer);
@@ -126,22 +129,47 @@
       staleTimer = null;
       stale = false;
       gotFix = false;
+      animFrom = animTo = null;
       if (marker) { map.removeLayer(marker); marker = null; markerLL = null; }
     }
 
+    // Each fix sets a new tween target; animateRider glides there over the time
+    // until the next fix is expected (measured from the last interval).
     function place(lat, lng, hdg) {
       lastHdg = hdg;
-      markerLL = [lat, lng];
-      // Marker stays glued to the rider's coordinates; the map pans to follow but
-      // can be dragged freely without the icon leaving its true position.
-      if (!gotFix) map.setView(markerLL, ZOOM);
-      else map.panTo(markerLL, { animate:true, duration:.6 });
+      const target = [lat, lng];
+      const now = performance.now();
+      if (!gotFix) {
+        markerLL = target;
+        animFrom = animTo = target;
+        map.setView(target, ZOOM);
+        marker = L.marker(target, { icon: makeDivIcon(), interactive: false, keyboard: false }).addTo(map);
+      } else {
+        animFrom = markerLL || target;
+        animTo = target;
+        animStart = now;
+        animDur = Math.min(Math.max(now - lastFixMs, 800), 6000); // match real cadence
+        marker.setIcon(makeDivIcon());
+      }
+      lastFixMs = now;
       gotFix = true;
       stale = false;
-      if (!marker) marker = L.marker(markerLL, { icon: makeDivIcon(), interactive: false, keyboard: false }).addTo(map);
-      else { marker.setLatLng(markerLL); marker.setIcon(makeDivIcon()); }
       armStale();
     }
+
+    // Interpolate the rider toward the latest fix and keep the map centred on it.
+    function animateRider() {
+      requestAnimationFrame(animateRider);
+      if (!animTo || !marker) return;
+      let t = animDur > 0 ? (performance.now() - animStart) / animDur : 1;
+      if (t > 1) t = 1;
+      const lat = animFrom[0] + (animTo[0] - animFrom[0]) * t;
+      const lng = animFrom[1] + (animTo[1] - animFrom[1]) * t;
+      markerLL = [lat, lng];
+      marker.setLatLng(markerLL);
+      map.setView(markerLL, map.getZoom(), { animate: false });
+    }
+    animateRider();
 
     /* ===== Single wind arrow ===== */
     const canvas = document.getElementById("wind-canvas");
