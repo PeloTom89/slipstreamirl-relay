@@ -34,11 +34,23 @@ const PAGES = {
 };
 
 function broadcast(loc) {
-  lastLocation = loc.hidden
-    ? { hidden: true, ts: Date.now() }
-    : { lat: loc.lat, lng: loc.lng, acc: loc.acc ?? null, hdg: loc.hdg ?? null,
+  let payload;
+  if (loc.offline) {
+    // Stream stopped — clear the cached position so new overlays don't snap to it.
+    lastLocation = null;
+    payload = JSON.stringify({ offline: true, ts: Date.now() });
+  } else if (typeof loc.wind === "boolean") {
+    // Wind on/off toggle — remember it so freshly-opened overlays sync.
+    lastWind = loc.wind;
+    payload = JSON.stringify({ wind: loc.wind, ts: Date.now() });
+  } else if (loc.hidden) {
+    lastLocation = { hidden: true, ts: Date.now() };
+    payload = JSON.stringify(lastLocation);
+  } else {
+    lastLocation = { lat: loc.lat, lng: loc.lng, acc: loc.acc ?? null, hdg: loc.hdg ?? null,
         spd: loc.spd ?? null, dist: loc.dist ?? null, ts: Date.now() };
-  const payload = JSON.stringify(lastLocation);
+    payload = JSON.stringify(lastLocation);
+  }
   for (const o of overlays) if (o.readyState === o.OPEN) o.send(payload, () => {});
 }
 
@@ -183,6 +195,7 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 const overlays = new Set();
 let lastLocation = null; // cached so a freshly-opened overlay snaps to current position
+let lastWind = null;     // cached wind on/off so a freshly-opened overlay syncs
 
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url, "http://x");
@@ -192,6 +205,7 @@ wss.on("connection", (ws, req) => {
   if (role === "overlay") {
     overlays.add(ws);
     ws.on("error", () => {});
+    if (lastWind !== null) ws.send(JSON.stringify({ wind: lastWind }));
     if (lastLocation) ws.send(JSON.stringify(lastLocation));
     ws.on("close", () => overlays.delete(ws));
     return;
@@ -203,7 +217,8 @@ wss.on("connection", (ws, req) => {
     ws.on("message", (buf) => {
       let msg;
       try { msg = JSON.parse(buf.toString()); } catch { return; }
-      if (typeof msg.lat !== "number" || typeof msg.lng !== "number") return;
+      const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean";
+      if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) return;
       broadcast(msg);
     });
     return;
