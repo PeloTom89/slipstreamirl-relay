@@ -112,7 +112,7 @@
 
     // Returns 0..4 (green..purple) or -1 when not computable.
     function zoneIndex(metric, value) {
-      if (!zones || value == null) return -1;
+      if (!zones || zones.enabled === false || value == null) return -1;
       if (metric === "power" && zones.ftp) {
         const f = zones.ftp;
         return value < f*0.55 ? 0 : value < f*0.76 ? 1 : value < f*0.91 ? 2 : value < f*1.06 ? 3 : 4;
