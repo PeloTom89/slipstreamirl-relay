@@ -35,12 +35,7 @@
   .card .val{color:#0c0d10;font-weight:800;font-size:2.5em;line-height:1.05;
     font-variant-numeric:tabular-nums;margin-top:0.05em}
   .card .val .unit{font-size:0.4em;font-weight:700;color:#8b919a;margin-left:0.3em}
-  /* When a zone color is applied, all card text/icons follow the card color. */
-  .card.zoned{border-color:transparent}
-  .card.zoned .lbl{color:currentColor;opacity:.85}
-  .card.zoned .lbl svg{stroke:currentColor}
-  .card.zoned .val{color:currentColor}
-  .card.zoned .val .unit{color:currentColor;opacity:.8}
+  .card .val span[id]{transition:color .25s ease}  /* the zone-colored number */
 
   /* Map is the real /overlay page embedded, so cyclist + wind + "?" all carry over. */
   #mapwrap{flex:1;position:relative;background:#e9e7e2}
@@ -111,10 +106,9 @@
     let lastSpdMs = 0, lastDistM = 0;
     let lastPower = null, lastCadence = null, lastHr = null;
 
-    // Effort zones: anchors come from the app; cards tint green→purple by effort.
-    let zones = null; // {ftp, lthr, cadence, speed(m/s)}
-    const ZONE_BG = ["#1f9d57", "#e6b800", "#e07b1a", "#d8392b", "#7d3cc9"];
-    const ZONE_FG = ["#ffffff", "#1a1a1a", "#ffffff", "#ffffff", "#ffffff"];
+    // Effort zones: anchors come from the app; the value digits color green→purple.
+    let zones = null; // {ftp, lthr, maxhr, cadence, speed(m/s)}
+    const ZONE_COLORS = ["#1f9d57", "#caa000", "#e07b1a", "#d8392b", "#8a3fd4"];
 
     // Returns 0..4 (green..purple) or -1 when not computable.
     function zoneIndex(metric, value) {
@@ -143,12 +137,8 @@
 
     function colorCard(id, metric, value) {
       const el = document.getElementById(id);
-      const card = el.closest(".card");
       const z = zoneIndex(metric, value);
-      if (z < 0) { card.classList.remove("zoned"); card.style.background = ""; card.style.color = ""; return; }
-      card.classList.add("zoned");
-      card.style.background = ZONE_BG[z];
-      card.style.color = ZONE_FG[z];
+      el.style.color = z < 0 ? "" : ZONE_COLORS[z];  // color the number only
     }
 
     function recolorAll() {
