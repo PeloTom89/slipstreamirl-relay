@@ -27,7 +27,7 @@
     font-variant-numeric:tabular-nums}
 
   #cards{display:flex;gap:0.5em;padding:0.35em 0.5em 0.5em}
-  .card{flex:1;border:1px solid #e6e8eb;border-radius:0.6em;padding:0.4em 0.7em;
+  .card{flex:1;min-width:0;border:1px solid #e6e8eb;border-radius:0.6em;padding:0.4em 0.7em;
     transition:background-color .25s ease}
   .card .lbl{display:flex;align-items:center;justify-content:space-between;
     color:#8b919a;font-size:0.72em;font-weight:700;letter-spacing:0.06em}
@@ -35,8 +35,8 @@
   .card .val{color:#0c0d10;font-weight:800;font-size:2.5em;line-height:1.05;
     font-variant-numeric:tabular-nums;margin-top:0.05em}
   .card .val .unit{font-size:0.4em;font-weight:700;color:#8b919a;margin-left:0.3em}
-  .windval{display:flex;align-items:center}
-  .windDart{width:0.95em;height:0.95em;flex:0 0 auto;margin-right:0.12em;
+  .windval{display:flex;align-items:baseline;font-size:2.05em}
+  .windDart{width:0.8em;height:0.8em;flex:0 0 auto;margin-right:0.08em;align-self:center;
     filter:drop-shadow(0 1px 2px rgba(30,80,200,.4));transition:transform .4s ease}
   .card .val span[id]{transition:color .25s ease}  /* the zone-colored number */
 

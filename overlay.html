@@ -227,7 +227,7 @@
       const fadeZone = travel * 0.25;
 
       for (let i = 0; i < numArrows; i++) {
-        arrowOffsets[i] += wind.speed * 2 * motionScale;
+        arrowOffsets[i] += wind.speed * 0.08 * motionScale;  // px/frame ∝ real wind km/h
         if (arrowOffsets[i] > travel) arrowOffsets[i] = -travel;
 
         const t     = (arrowOffsets[i] + fadeZone) / (2 * fadeZone);
@@ -268,11 +268,8 @@
         const dir = data.current.wind_direction_10m; // degrees FROM which wind blows
         // Convert to the direction wind is blowing TO, then to a screen unit vector.
         const rad = ((dir + 180) % 360) * Math.PI / 180;
-        wind = {
-          vx:    Math.sin(rad),
-          vy:   -Math.cos(rad),           // canvas y increases downward
-          speed: Math.max(0.4, spd / 15), // ~0.4 px/frame calm, ~3+ px/frame strong
-        };
+        // Flow speed is linearly proportional to real wind (km/h); calm => no arrows.
+        wind = (spd < 1) ? null : { vx: Math.sin(rad), vy: -Math.cos(rad), speed: spd };
       } catch {}
     }
 
