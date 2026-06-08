@@ -35,7 +35,8 @@
   .card .val{color:#0c0d10;font-weight:800;font-size:2.5em;line-height:1.05;
     font-variant-numeric:tabular-nums;margin-top:0.05em}
   .card .val .unit{font-size:0.4em;font-weight:700;color:#8b919a;margin-left:0.3em}
-  .windDart{transform-origin:center;transition:transform .4s ease;filter:drop-shadow(0 1px 2px rgba(30,80,200,.4))}
+  .windDart{transform-origin:center;transition:transform .4s ease}
+  .windFrom{color:#8b919a;font-size:0.72em;font-weight:700;letter-spacing:0.06em;text-align:right;margin-top:-0.1em}
   .card .val span[id]{transition:color .25s ease}  /* the zone-colored number */
 
   /* Map is the real /overlay page embedded, so cyclist + wind + "?" all carry over. */
@@ -63,9 +64,10 @@
           </div>
           <div class="card">
             <div class="lbl"><span>WIND</span>
-              <svg id="windArrow" class="windDart" viewBox="0 0 24 24"><polygon points="12,2 19.3,22 12,18 4.7,22" fill="#5b9cf6"/></svg>
+              <svg id="windArrow" class="windDart" viewBox="0 0 24 24"><polygon points="12,2 19.3,22 12,18 4.7,22" fill="#8b919a"/></svg>
             </div>
             <div class="val"><span id="wind">--</span><span class="unit" id="windUnit">mph</span></div>
+            <div class="windFrom"><span id="windDir">--</span></div>
           </div>
         </div>
         <div id="cards">
@@ -111,6 +113,9 @@
     const elClock = document.getElementById("clock");
     const elWind = document.getElementById("wind");
     const elWindArrow = document.getElementById("windArrow");
+    const elWindDir = document.getElementById("windDir");
+    const COMPASS = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+    const toCardinal = deg => COMPASS[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16];
     let startTs = null;
     let lastSpdMs = 0, lastDistM = 0;
     let lastPower = null, lastCadence = null, lastHr = null;
@@ -178,7 +183,10 @@
       const v = METRIC ? windKmh : windKmh * 0.621371;
       elWind.textContent = v.toFixed(0);
       document.getElementById("windUnit").textContent = METRIC ? "km/h" : "mph";
-      if (windDir != null) elWindArrow.style.transform = `rotate(${(windDir + 180) % 360}deg)`;
+      if (windDir != null) {
+        elWindArrow.style.transform = `rotate(${(windDir + 180) % 360}deg)`;
+        if (elWindDir) elWindDir.textContent = toCardinal(windDir);
+      }
     }
     function renderTemp() {
       if (tempC == null) return;
