@@ -60,6 +60,12 @@
             </div>
             <div class="val"><span id="dist">0.0</span><span class="unit" id="distUnit">mi</span></div>
           </div>
+          <div class="card">
+            <div class="lbl"><span>WIND</span>
+              <svg id="windArrow" viewBox="0 0 24 24" fill="none" stroke="#5b9cf6" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="transition:transform .4s ease"><path d="M12 4 L12 20"/><path d="M6 10 L12 4 L18 10"/></svg>
+            </div>
+            <div class="val"><span id="wind">--</span><span class="unit" id="windUnit">mph</span></div>
+          </div>
         </div>
         <div id="cards">
           <div class="card">
@@ -102,9 +108,12 @@
     const elHr = document.getElementById("hr");
     const elElapsed = document.getElementById("elapsed");
     const elClock = document.getElementById("clock");
+    const elWind = document.getElementById("wind");
+    const elWindArrow = document.getElementById("windArrow");
     let startTs = null;
     let lastSpdMs = 0, lastDistM = 0;
     let lastPower = null, lastCadence = null, lastHr = null;
+    let windKmh = null, windDir = null, lastWindFetch = 0;
 
     // Effort zones: anchors come from the app; the value digits color green→purple.
     let zones = null; // {ftp, lthr, maxhr, cadence, speed(m/s)}
@@ -160,12 +169,32 @@
     function setSpeed(ms) { lastSpdMs = ms || 0; elSpeed.textContent = toSpeed(lastSpdMs).toFixed(1); colorCard("speed", "speed", lastSpdMs); }
     function setDist(m)   { lastDistM = m  || 0; elDist.textContent  = toDist(lastDistM).toFixed(1); }
 
+    // Wind speed (km/h from Open-Meteo) -> current units; arrow points the way the
+    // wind is blowing TO (dir is the direction it comes FROM, so + 180).
+    function renderWind() {
+      if (windKmh == null) return;
+      const v = METRIC ? windKmh : windKmh * 0.621371;
+      elWind.textContent = v.toFixed(0);
+      document.getElementById("windUnit").textContent = METRIC ? "km/h" : "mph";
+      if (windDir != null) elWindArrow.style.transform = `rotate(${(windDir + 180) % 360}deg)`;
+    }
+    async function fetchWind(lat, lng) {
+      try {
+        const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=wind_speed_10m,wind_direction_10m`);
+        const data = await r.json();
+        windKmh = data.current.wind_speed_10m;
+        windDir = data.current.wind_direction_10m;
+        renderWind();
+      } catch {}
+    }
+
     function applyUnits() {
       document.getElementById("speedUnit").textContent = METRIC ? "km/h" : "mph";
       document.getElementById("distUnit").textContent  = METRIC ? "km" : "mi";
       // Re-render last known values in the new units.
       elSpeed.textContent = toSpeed(lastSpdMs).toFixed(1);
       elDist.textContent  = toDist(lastDistM).toFixed(1);
+      renderWind();
     }
     applyUnits();
 
@@ -198,6 +227,8 @@
             if (!startTs) startTs = Date.now();
             setSpeed(d.spd);
             setDist(d.dist);
+            const now = Date.now();
+            if (now - lastWindFetch > 10 * 60 * 1000) { lastWindFetch = now; fetchWind(d.lat, d.lng); }
           }
         } catch {}
       };
