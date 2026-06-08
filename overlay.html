@@ -195,6 +195,7 @@
       if (w && h && (canvas.width !== w || canvas.height !== h)) {
         canvas.width  = w;
         canvas.height = h;
+        arrowOffsets = null; // re-space arrows for the new size next frame
       }
       if (canvas.height) { const r = canvas.height / 700; motionScale = r; drawScale = Math.sqrt(r); }
     }
