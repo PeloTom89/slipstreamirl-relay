@@ -32,6 +32,21 @@ const PAGES = {
 };
 
 function broadcast(loc) {
+  // Broadcast-delay config from the app: {delay:<seconds>}. Apply it immediately
+  // (the config message itself is never delayed) and don't forward it to overlays.
+  if (typeof loc.delay === "number") {
+    delayMs = Math.max(0, Math.min(30000, Math.round(loc.delay * 1000)));
+    return;
+  }
+  // Hold every overlay-bound message for delayMs so the data lines up with the
+  // latency-delayed Twitch video. Cache state is mutated inside emit() (i.e. at
+  // send time, post-delay), so a freshly-connected overlay snaps to whatever the
+  // other overlays are currently showing rather than to the un-delayed "now".
+  if (delayMs > 0) setTimeout(() => emit(loc), delayMs);
+  else emit(loc);
+}
+
+function emit(loc) {
   let payload;
   if (loc.offline) {
     // Stream stopped — clear the cached position so new overlays don't snap to it.
@@ -198,7 +213,7 @@ const server = http.createServer((req, res) => {
       // (stream stopped), or {wind:bool} toggle is allowed without coordinates;
       // otherwise lat/lng are required.
       const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean" || typeof msg.units === "string"
-        || "power" in msg || "cadence" in msg || "hr" in msg || msg.zones;
+        || typeof msg.delay === "number" || "power" in msg || "cadence" in msg || "hr" in msg || msg.zones;
       if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) {
         res.writeHead(400); res.end("bad coords"); return;
       }
@@ -229,6 +244,7 @@ let lastWind = null;     // cached wind on/off so a freshly-opened overlay syncs
 let lastUnits = null;    // cached units pref so a freshly-opened overlay syncs
 let lastSensors = null;  // cached power/cadence/hr so a freshly-opened overlay syncs
 let lastZones = null;    // cached effort-zone anchors so a freshly-opened overlay syncs
+let delayMs = 4500;      // hold overlay broadcasts this long to sync with Twitch stream latency; set by the app
 
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url, "http://x");
@@ -254,7 +270,7 @@ wss.on("connection", (ws, req) => {
       let msg;
       try { msg = JSON.parse(buf.toString()); } catch { return; }
       const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean" || typeof msg.units === "string"
-        || "power" in msg || "cadence" in msg || "hr" in msg || msg.zones;
+        || typeof msg.delay === "number" || "power" in msg || "cadence" in msg || "hr" in msg || msg.zones;
       if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) return;
       broadcast(msg);
     });
