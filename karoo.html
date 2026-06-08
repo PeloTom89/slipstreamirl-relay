@@ -49,7 +49,7 @@
   <div id="wrap">
     <div id="device">
       <div id="screen">
-        <div id="topbar"><span id="elapsed">0:00:00</span><span id="clock">--:--</span></div>
+        <div id="topbar"><span id="elapsed">0:00:00</span><span id="temp">--°</span><span id="clock">--:--</span></div>
         <div id="cards">
           <div class="card">
             <div class="lbl"><span>SPEED</span>
@@ -117,7 +117,8 @@
     let startTs = null;
     let lastSpdMs = 0, lastDistM = 0;
     let lastPower = null, lastCadence = null, lastHr = null;
-    let windKmh = null, windDir = null, lastWindFetch = 0;
+    let windKmh = null, windDir = null, tempC = null, lastWindFetch = 0;
+    const elTemp = document.getElementById("temp");
 
     // Effort zones: anchors come from the app; the value digits color green→purple.
     let zones = null; // {ftp, lthr, maxhr, cadence, speed(m/s)}
@@ -182,13 +183,20 @@
       document.getElementById("windUnit").textContent = METRIC ? "km/h" : "mph";
       if (windDir != null) elWindArrow.style.transform = `rotate(${(windDir + 180) % 360}deg)`;
     }
+    function renderTemp() {
+      if (tempC == null) return;
+      const t = METRIC ? tempC : tempC * 9 / 5 + 32;
+      elTemp.textContent = Math.round(t) + "°";
+    }
     async function fetchWind(lat, lng) {
       try {
-        const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=wind_speed_10m,wind_direction_10m`);
+        const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=wind_speed_10m,wind_direction_10m,temperature_2m`);
         const data = await r.json();
         windKmh = data.current.wind_speed_10m;
         windDir = data.current.wind_direction_10m;
+        tempC = data.current.temperature_2m;
         renderWind();
+        renderTemp();
       } catch {}
     }
 
@@ -199,6 +207,7 @@
       elSpeed.textContent = toSpeed(lastSpdMs).toFixed(1);
       elDist.textContent  = toDist(lastDistM).toFixed(1);
       renderWind();
+      renderTemp();
     }
     applyUnits();
 
