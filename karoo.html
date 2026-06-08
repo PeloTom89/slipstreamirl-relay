@@ -186,7 +186,7 @@
     function renderTemp() {
       if (tempC == null) return;
       const t = METRIC ? tempC : tempC * 9 / 5 + 32;
-      elTemp.textContent = Math.round(t) + "°";
+      elTemp.textContent = Math.round(t) + (METRIC ? "°C" : "°F");
     }
     async function fetchWind(lat, lng) {
       try {
