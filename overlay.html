@@ -227,7 +227,7 @@
       const fadeZone = travel * 0.25;
 
       for (let i = 0; i < numArrows; i++) {
-        arrowOffsets[i] += wind.speed * 0.08 * motionScale;  // px/frame ∝ real wind km/h
+        arrowOffsets[i] += wind.speed * 0.03 * motionScale;  // px/frame ∝ real wind km/h (visual scale)
         if (arrowOffsets[i] > travel) arrowOffsets[i] = -travel;
 
         const t     = (arrowOffsets[i] + fadeZone) / (2 * fadeZone);
