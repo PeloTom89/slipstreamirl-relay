@@ -234,7 +234,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("location relay up");
+  res.end("location relay up (broadcast delay " + delayMs + "ms)");
 });
 
 const wss = new WebSocketServer({ server });
