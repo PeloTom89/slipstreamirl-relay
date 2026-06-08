@@ -35,6 +35,9 @@
   .card .val{color:#0c0d10;font-weight:800;font-size:2.5em;line-height:1.05;
     font-variant-numeric:tabular-nums;margin-top:0.05em}
   .card .val .unit{font-size:0.4em;font-weight:700;color:#8b919a;margin-left:0.3em}
+  .windval{display:flex;align-items:center}
+  .windDart{width:0.95em;height:0.95em;flex:0 0 auto;margin-right:0.12em;
+    filter:drop-shadow(0 1px 2px rgba(30,80,200,.4));transition:transform .4s ease}
   .card .val span[id]{transition:color .25s ease}  /* the zone-colored number */
 
   /* Map is the real /overlay page embedded, so cyclist + wind + "?" all carry over. */
@@ -61,10 +64,11 @@
             <div class="val"><span id="dist">0.0</span><span class="unit" id="distUnit">mi</span></div>
           </div>
           <div class="card">
-            <div class="lbl"><span>WIND</span>
-              <svg id="windArrow" viewBox="0 0 24 24" fill="none" stroke="#5b9cf6" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" style="transition:transform .4s ease"><path d="M12 4 L12 20"/><path d="M6 10 L12 4 L18 10"/></svg>
+            <div class="lbl"><span>WIND</span></div>
+            <div class="val windval">
+              <svg id="windArrow" class="windDart" viewBox="0 0 24 24"><polygon points="12,2 19.3,22 12,18 4.7,22" fill="#5b9cf6"/></svg>
+              <span id="wind">--</span><span class="unit" id="windUnit">mph</span>
             </div>
-            <div class="val"><span id="wind">--</span><span class="unit" id="windUnit">mph</span></div>
           </div>
         </div>
         <div id="cards">
