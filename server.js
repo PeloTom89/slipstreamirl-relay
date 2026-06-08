@@ -23,11 +23,9 @@ const CLIENT_ID = process.env.TWITCH_CLIENT_ID || ""; // login app (public) — 
 const BADGE_CLIENT_ID = process.env.TWITCH_BADGE_CLIENT_ID || CLIENT_ID;
 const CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
 
-// Serve the two pages straight from this service, so it's one deploy / one URL:
-//   /          -> the control app (open this on your phone)
-//   /overlay   -> the OBS browser source
+// Overlay pages served straight from this service (one deploy / one URL).
+// Control is the native SlipstreamIRL app now; "/" just returns a status line.
 const PAGES = {
-  "/": "golive.html",
   "/overlay": "overlay.html",
   "/chat": "chat.html",
   "/karoo": "karoo.html",
@@ -191,11 +189,6 @@ const server = http.createServer((req, res) => {
   if (file) {
     fs.readFile(path.join(__dirname, file), "utf8", (err, html) => {
       if (err) { res.writeHead(500); res.end("missing " + file); return; }
-      // inject Client ID + token into the control app so nothing is hardcoded
-      if (file === "golive.html") {
-        const cfg = `<script>window.__CONFIG__=${JSON.stringify({ CLIENT_ID, RELAY_TOKEN: TOKEN })};</script>`;
-        html = html.replace("</head>", cfg + "\n</head>");
-      }
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(html);
     });

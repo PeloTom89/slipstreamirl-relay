@@ -19,8 +19,7 @@ your OBS browser source. No RTIRL, no third-party location service.
 
 | file | route | what |
 |---|---|---|
-| `server.js` | — | the relay (HTTP + WebSocket) |
-| `golive.html` | `/` | legacy web control page |
+| `server.js` | — | the relay (HTTP + WebSocket); `/` returns a status line |
 | `overlay.html` | `/overlay` | map overlay (rider + wind), OBS browser source |
 | `karoo.html` | `/karoo` | bike-computer overlay (speed, distance, 3s power, cadence, heart) |
 | `chat.html` | `/chat` | Twitch chat overlay |
