@@ -189,6 +189,9 @@
     let wind = null;
     let motionScale = 1, drawScale = 1;
     let arrowOffsets = null; // one signed offset per arrow, distance from canvas centre along wind direction
+    // Wind arrows move at the wind's real ground speed for the map's zoom/latitude,
+    // amplified by this factor so it's visible (1 = literal, ~frozen at zoom 16).
+    const WIND_EXAGGERATION = 8;
 
     function resizeCanvas() {
       const w = canvas.offsetWidth, h = canvas.offsetHeight;
@@ -225,9 +228,13 @@
       const s     = 22 * drawScale;
       // Fade starts this far from centre on each side — closer = tighter halo around icon.
       const fadeZone = travel * 0.25;
+      // Real px/frame from the map's metres-per-pixel at this zoom + rider latitude.
+      const lat = markerLL ? markerLL[0] : 0;
+      const mPerPx = 40075016.686 * Math.cos(lat * Math.PI / 180) / Math.pow(2, map.getZoom() + 8);
+      const pxPerFrame = ((wind.speed / 3.6) / mPerPx) / 60 * WIND_EXAGGERATION; // km/h -> m/s -> px
 
       for (let i = 0; i < numArrows; i++) {
-        arrowOffsets[i] += wind.speed * 0.03 * motionScale;  // px/frame ∝ real wind km/h (visual scale)
+        arrowOffsets[i] += pxPerFrame;  // wind's true ground speed for the map scale
         if (arrowOffsets[i] > travel) arrowOffsets[i] = -travel;
 
         const t     = (arrowOffsets[i] + fadeZone) / (2 * fadeZone);
