@@ -15,6 +15,24 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
       on connect. Confirm `offline` is reflected (cleared `lastLocation`) so a
       late-joining overlay doesn't snap to a stale position.
 
+## Big bet: multi-tenant relay (turnkey for many streamers — needs more thought)
+
+Today the relay is single-tenant: one `RELAY_TOKEN`, one global room, global
+`lastLocation`/`lastWind`/`lastUnits`/`lastSensors`/`lastZones`. To host many
+streamers from one relay:
+
+- [ ] **Channels keyed by Twitch user ID** — rooms per channel; overlays join via
+      `?channel=<id>`; pushes target `?channel=<id>`. Move all cached "last*" state
+      into per-channel objects.
+- [ ] **Per-channel auth** — verify the streamer's Twitch token on first push (call
+      Twitch `/users`), issue a signed per-channel push token (JWT). Overlays stay
+      read-only/public by channel id (no secret in OBS URL).
+- [ ] **Scaling** — Render always-on; if multi-instance, Redis pub/sub to share
+      rooms across instances (WebSocket fan-out).
+
+See the app `ROADMAP.md` "Big bet" section for the full turnkey plan (app
+auto-provisioning, distribution, privacy policy, phasing).
+
 ## Later / ideas
 
 - [ ] **Karoo as a Twitch Extension** — package `karoo.html` as a Video Overlay
