@@ -1,43 +1,87 @@
 # SlipstreamIRL Relay
 
-The backend web service for the **SlipstreamIRL** app (deploys as your own Render service, e.g. `irl-stream-control`).
+The backend web service for **SlipstreamIRL** — one small Node service (deploys on
+Render, e.g. `irl-stream-control`) that relays your phone's GPS and bike-sensor data
+to live OBS overlays, and proxies a few Twitch bits.
 
-One free web service that:
+Phone (the [app](https://github.com/PeloTom89/slipstreamirl-app)) → this relay →
+your OBS browser source. No RTIRL, no third-party location service.
 
-- posts `!start` / `!stop` to your Twitch chat (your bot launches/stops OBS), and
-- streams your phone’s GPS to a live map overlay for OBS.
+## What it does
 
-No native app, no RTIRL. Phone → your relay → your overlay.
+- Receives GPS, speed, distance, and BLE sensor data (power/cadence/heart rate)
+  from the app over `POST /push`, and fans it out to connected overlays via WebSocket.
+- Serves the overlay pages OBS points at.
+- Bounces Twitch's OAuth redirect (`/app-redirect`) so the app can sign in.
+- Proxies Twitch chat badge images for the chat overlay.
 
-## Files
+## Files & routes
 
-- `server.js` — the relay + serves the two pages
-- `golive.html` — the control app (open on your phone) — served at `/`
-- `overlay.html` — the OBS browser source — served at `/overlay`
-- `render.yaml` — Render Blueprint (auto-provisions the service)
-- `package.json` — deps + start command
+| file | route | what |
+|---|---|---|
+| `server.js` | — | the relay (HTTP + WebSocket) |
+| `golive.html` | `/` | legacy web control page |
+| `overlay.html` | `/overlay` | map overlay (rider + wind), OBS browser source |
+| `karoo.html` | `/karoo` | bike-computer overlay (speed, distance, 3s power, cadence, heart) |
+| `chat.html` | `/chat` | Twitch chat overlay |
+| `render.yaml` | — | Render Blueprint (auto-provisions the service + token) |
 
-## One-click deploy
+Endpoints: `POST /push` (sender), `GET /health` (token check), `GET /badges`
+(chat badges), `GET /app-redirect` (Twitch OAuth bounce), WebSocket `?role=overlay|sender`.
 
-Replace `YOUR_USERNAME/YOUR_REPO` with this repo, then click:
+## Overlay options
+
+Both overlays take query params:
+- `?embed=1` — fill flush (no rounded corners), used by the in-app preview / Karoo embed.
+- `?wind=off` — start with wind arrows hidden (map overlay).
+- `?units=metric` — start in metric (the app also sets units live).
+
+`karoo.html` embeds `/overlay` for its map, so map fixes (smooth movement, marker,
+wind) carry over. Card values color by effort zone when zones are enabled.
+
+## Push protocol
+
+The app pushes JSON to `POST /push?token=…`. Beyond a normal position fix, several
+**keyless** control messages are supported (no lat/lng required):
+
+| message | meaning |
+|---|---|
+| `{lat,lng,acc,hdg,spd,dist}` | position fix |
+| `{hidden:true}` | inside the privacy geofence (overlay freezes to "?") |
+| `{offline:true}` | stream ended — hide the marker |
+| `{wind:bool}` | wind arrows on/off |
+| `{units:"imperial"\|"metric"}` | units preference |
+| `{power,cadence,hr}` | BLE sensor values |
+| `{zones:{enabled,ftp,lthr,maxhr,cadence,speed}}` | effort-zone anchors |
+
+`broadcast()` rebuilds each payload and caches the latest of each kind
+(`lastLocation`/`lastWind`/`lastUnits`/`lastSensors`/`lastZones`), replaying them to
+any overlay that connects later. **Any new keyless message must be allowed in both
+`/push` validation and `broadcast()`, or it's silently dropped.**
+
+## Deploy
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/PeloTom89/slipstreamirl-relay.git)
 
-This reads `render.yaml`, creates a free web service, and auto-generates the relay token.
+1. Create a **Public** Twitch app at <https://dev.twitch.tv/console/apps>; copy the **Client ID**.
+2. Click Deploy (or Render → New → Blueprint → this repo). Paste the Client ID into
+   `TWITCH_CLIENT_ID`; Render generates `RELAY_TOKEN`. Deploy.
+3. Copy your service URL (e.g. `https://irl-stream-control.onrender.com`).
+4. On the Twitch app, add `<your-url>/app-redirect` as an OAuth Redirect URL (exact match).
+5. In the app, enter the relay URL + token under **Relay Server**. In OBS, add a
+   Browser Source for `<your-url>/overlay` and/or `<your-url>/karoo`.
 
-## Setup (about 5 minutes)
+### Env vars
 
-1. **Create a Twitch app** at <https://dev.twitch.tv/console/apps> — type **Public**. Copy the **Client ID**.
-1. **Push these files** to a GitHub repo.
-1. **Click the Deploy button** above (or in Render: New → Blueprint → pick the repo).
-- When prompted, paste your **Client ID** into the `TWITCH_CLIENT_ID` field.
-- Render generates `RELAY_TOKEN` for you. Deploy.
-1. **Copy your service URL** (e.g. `https://irl-stream-control.onrender.com`).
-1. **Register the redirect** back on your Twitch app: add that URL **with a trailing slash** as an OAuth Redirect URL — it must match exactly.
-1. **Go:** open the URL on your phone, tap Connect. In OBS, add a Browser source pointing at `<your-url>/overlay`.
+- `TWITCH_CLIENT_ID` — your Twitch app Client ID.
+- `RELAY_TOKEN` — shared secret the **sender** (app) must present; overlays are
+  read-only and need no token.
+- `CLIENT_SECRET` *(optional)* — enables chat badge images via Twitch Helix.
 
 ## Notes
 
-- **Cold start:** the free service sleeps after ~15 min idle (30–50s to wake) but stays up while you’re connected. Open the app and connect a minute before going live.
-- **Privacy zone:** set `HOME` (lat/lng + radius in meters) in `golive.html` to stop broadcasting near home.
-- **Token:** auto-generated and never committed, but it’s visible in the served page’s JS, so treat the control URL as private. Don’t share it publicly.
+- **Cold start:** the free Render tier sleeps after ~15 min idle (30–50s to wake).
+  Connect a minute before going live.
+- **Single-tenant:** today this is one streamer per relay (one token, one room).
+  Multi-tenant (many streamers on one relay, keyed by Twitch ID) is in `ROADMAP.md`.
+- The token is visible in the served control page's JS, so treat the relay URL as private.
