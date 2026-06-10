@@ -49,9 +49,16 @@ function broadcast(loc) {
 function emit(loc) {
   let payload;
   if (loc.offline) {
-    // Stream stopped — clear the cached position so new overlays don't snap to it.
+    // Stream stopped — clear the cached position and the ride start so new overlays
+    // don't snap to them.
     lastLocation = null;
+    lastLiveStart = null;
     payload = JSON.stringify({ offline: true, ts: Date.now() });
+  } else if (typeof loc.liveStart === "number") {
+    // Go-live timestamp (epoch ms) — cache so the elapsed timer is anchored to when
+    // the rider actually went live, surviving overlay refreshes and late joins.
+    lastLiveStart = loc.liveStart || null;
+    payload = JSON.stringify({ liveStart: lastLiveStart, ts: Date.now() });
   } else if (typeof loc.wind === "boolean") {
     // Wind on/off toggle — remember it so freshly-opened overlays sync.
     lastWind = loc.wind;
@@ -213,7 +220,7 @@ const server = http.createServer((req, res) => {
       // (stream stopped), or {wind:bool} toggle is allowed without coordinates;
       // otherwise lat/lng are required.
       const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean" || typeof msg.units === "string"
-        || typeof msg.delay === "number" || "power" in msg || "cadence" in msg || "hr" in msg || msg.zones;
+        || typeof msg.delay === "number" || typeof msg.liveStart === "number" || "power" in msg || "cadence" in msg || "hr" in msg || msg.zones;
       if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) {
         res.writeHead(400); res.end("bad coords"); return;
       }
@@ -244,6 +251,7 @@ let lastWind = null;     // cached wind on/off so a freshly-opened overlay syncs
 let lastUnits = null;    // cached units pref so a freshly-opened overlay syncs
 let lastSensors = null;  // cached power/cadence/hr so a freshly-opened overlay syncs
 let lastZones = null;    // cached effort-zone anchors so a freshly-opened overlay syncs
+let lastLiveStart = null;// cached go-live epoch ms so the elapsed timer survives overlay refreshes
 let delayMs = 4500;      // hold overlay broadcasts this long to sync with Twitch stream latency; set by the app
 
 wss.on("connection", (ws, req) => {
@@ -258,6 +266,7 @@ wss.on("connection", (ws, req) => {
     if (lastUnits !== null) ws.send(JSON.stringify({ units: lastUnits }));
     if (lastSensors) ws.send(JSON.stringify(lastSensors));
     if (lastZones) ws.send(JSON.stringify({ zones: lastZones }));
+    if (lastLiveStart) ws.send(JSON.stringify({ liveStart: lastLiveStart }));
     if (lastLocation) ws.send(JSON.stringify(lastLocation));
     ws.on("close", () => overlays.delete(ws));
     return;
@@ -270,7 +279,7 @@ wss.on("connection", (ws, req) => {
       let msg;
       try { msg = JSON.parse(buf.toString()); } catch { return; }
       const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean" || typeof msg.units === "string"
-        || typeof msg.delay === "number" || "power" in msg || "cadence" in msg || "hr" in msg || msg.zones;
+        || typeof msg.delay === "number" || typeof msg.liveStart === "number" || "power" in msg || "cadence" in msg || "hr" in msg || msg.zones;
       if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) return;
       broadcast(msg);
     });

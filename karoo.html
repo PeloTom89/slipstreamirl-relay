@@ -230,11 +230,16 @@
           const d = JSON.parse(e.data);
           if (typeof d.units === "string") { units = d.units; METRIC = units === "metric" || units === "km"; applyUnits(); }
           if (d.zones) { zones = d.zones; recolorAll(); return; }
+          if (typeof d.liveStart === "number") {
+            // Anchor the elapsed timer to when the rider went live (survives refreshes).
+            startTs = d.liveStart || null;
+            if (!startTs) elElapsed.textContent = "0:00:00";
+            return;
+          }
           if ("power" in d || "cadence" in d || "hr" in d) { setSensors(d); return; }
-          if (d.offline) { setSpeed(0); return; }   // stream ended
+          if (d.offline) { setSpeed(0); startTs = null; elElapsed.textContent = "0:00:00"; return; }   // stream ended
           if (d.hidden) { setSpeed(0); return; }    // in privacy zone: paused
           if (typeof d.lat === "number") {
-            if (!startTs) startTs = Date.now();
             setSpeed(d.spd);
             setDist(d.dist);
             const now = Date.now();
