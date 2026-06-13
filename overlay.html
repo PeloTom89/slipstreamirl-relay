@@ -28,9 +28,9 @@
     100%{transform:scale(2.2);opacity:0}
   }
   .qmark{width:34px;height:34px;border-radius:50%;background:rgba(15,23,38,.88);
-    border:2px solid #4d96ff;color:#cfe0ff;text-align:center;
-    font:800 20px/31px -apple-system,Segoe UI,sans-serif;
+    border:2px solid #4d96ff;display:flex;align-items:center;justify-content:center;
     box-shadow:0 2px 6px rgba(0,0,0,.55);animation:qpulse 1.4s ease-in-out infinite}
+  .qmark svg{width:18px;height:28px}
   @keyframes qpulse{
     0%,100%{transform:scale(1);opacity:.8}
     50%    {transform:scale(1.18);opacity:1}
@@ -103,7 +103,7 @@
     }
 
     function iconHtml() {
-      const inner = stale ? '<div class="qmark">?</div>' : cyclistSVG(lastHdg);
+      const inner = stale ? '<div class="qmark">' + cyclistSVG(0) + '</div>' : cyclistSVG(lastHdg);
       return `<div class="me-wrap${stale ? " stale" : ""}">` +
                `<div class="me-halo"><div class="pulse-ring"></div></div>` +
                `<div class="me-icon">${inner}</div>` +
