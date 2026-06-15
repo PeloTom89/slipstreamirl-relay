@@ -38,7 +38,7 @@
   /* Garmin Varia rear-radar strip: approaching vehicles down the right edge. */
   #radar{position:absolute;right:10px;top:10px;bottom:10px;width:30px;z-index:560;display:none;pointer-events:none}
   #radar .track{position:absolute;left:50%;transform:translateX(-50%);top:0;bottom:0;width:4px;background:rgba(255,255,255,.18);border-radius:2px}
-  #radar .me{position:absolute;left:50%;bottom:-2px;transform:translateX(-50%);width:12px;height:12px;border-radius:50%;background:#1a6abf;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.6)}
+  #radar .me{position:absolute;left:50%;top:-2px;transform:translateX(-50%);width:12px;height:12px;border-radius:50%;background:#1a6abf;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.6)}
   .radarDot{position:absolute;left:50%;transform:translate(-50%,-50%);width:18px;height:18px;border-radius:50%;border:2px solid rgba(255,255,255,.85);box-shadow:0 1px 4px rgba(0,0,0,.6)}
   .radarDot.t0{background:#9aa3af}
   .radarDot.t1{background:#ffcf3f}
@@ -316,8 +316,8 @@
       ws.onerror = () => ws.close();
     }
 
-    // Varia radar strip: place a dot per vehicle by distance (far=top, near=bottom),
-    // colored by threat. Empty list hides the strip.
+    // Varia radar strip: place a dot per vehicle by distance (you/near at the top,
+    // far behind at the bottom), colored by threat. Empty list hides the strip.
     const RADAR_MAXD = 150;
     function renderRadar(targets) {
       const wrap = document.getElementById("radar");
@@ -329,7 +329,7 @@
         const el = document.createElement("div");
         el.className = "radarDot " + (t.threat >= 2 ? "t2" : t.threat >= 1 ? "t1" : "t0");
         const frac = Math.max(0, Math.min(1, (t.dist || 0) / RADAR_MAXD));
-        el.style.top = ((1 - frac) * 100) + "%";
+        el.style.top = (frac * 100) + "%"; // near=top, far behind=bottom
         wrap.appendChild(el);
       }
     }
