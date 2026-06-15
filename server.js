@@ -53,7 +53,13 @@ function emit(loc) {
     // don't snap to them.
     lastLocation = null;
     lastLiveStart = null;
+    lastRadar = null;
     payload = JSON.stringify({ offline: true, ts: Date.now() });
+  } else if (Array.isArray(loc.radar)) {
+    // Garmin Varia radar targets [{speed,dist,threat}] — cache the latest frame for
+    // late overlays (an empty array clears the strip when the road is clear).
+    lastRadar = loc.radar;
+    payload = JSON.stringify({ radar: loc.radar, ts: Date.now() });
   } else if (typeof loc.liveStart === "number") {
     // Go-live timestamp (epoch ms) — cache so the elapsed timer is anchored to when
     // the rider actually went live, surviving overlay refreshes and late joins.
@@ -220,7 +226,7 @@ const server = http.createServer((req, res) => {
       // (stream stopped), or {wind:bool} toggle is allowed without coordinates;
       // otherwise lat/lng are required.
       const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean" || typeof msg.units === "string"
-        || typeof msg.delay === "number" || typeof msg.liveStart === "number" || "power" in msg || "cadence" in msg || "hr" in msg || msg.zones;
+        || typeof msg.delay === "number" || typeof msg.liveStart === "number" || Array.isArray(msg.radar) || "power" in msg || "cadence" in msg || "hr" in msg || msg.zones;
       if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) {
         res.writeHead(400); res.end("bad coords"); return;
       }
@@ -252,6 +258,7 @@ let lastUnits = null;    // cached units pref so a freshly-opened overlay syncs
 let lastSensors = null;  // cached power/cadence/hr so a freshly-opened overlay syncs
 let lastZones = null;    // cached effort-zone anchors so a freshly-opened overlay syncs
 let lastLiveStart = null;// cached go-live epoch ms so the elapsed timer survives overlay refreshes
+let lastRadar = null;    // cached Varia radar targets so a freshly-opened overlay syncs
 let delayMs = 4500;      // hold overlay broadcasts this long to sync with Twitch stream latency; set by the app
 
 wss.on("connection", (ws, req) => {
@@ -267,6 +274,7 @@ wss.on("connection", (ws, req) => {
     if (lastSensors) ws.send(JSON.stringify(lastSensors));
     if (lastZones) ws.send(JSON.stringify({ zones: lastZones }));
     if (lastLiveStart) ws.send(JSON.stringify({ liveStart: lastLiveStart }));
+    if (lastRadar) ws.send(JSON.stringify({ radar: lastRadar }));
     if (lastLocation) ws.send(JSON.stringify(lastLocation));
     ws.on("close", () => overlays.delete(ws));
     return;
@@ -279,7 +287,7 @@ wss.on("connection", (ws, req) => {
       let msg;
       try { msg = JSON.parse(buf.toString()); } catch { return; }
       const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean" || typeof msg.units === "string"
-        || typeof msg.delay === "number" || typeof msg.liveStart === "number" || "power" in msg || "cadence" in msg || "hr" in msg || msg.zones;
+        || typeof msg.delay === "number" || typeof msg.liveStart === "number" || Array.isArray(msg.radar) || "power" in msg || "cadence" in msg || "hr" in msg || msg.zones;
       if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) return;
       broadcast(msg);
     });

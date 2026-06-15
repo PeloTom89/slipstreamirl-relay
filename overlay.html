@@ -35,12 +35,22 @@
     0%,100%{transform:scale(1);opacity:.8}
     50%    {transform:scale(1.18);opacity:1}
   }
+  /* Garmin Varia rear-radar strip: approaching vehicles down the right edge. */
+  #radar{position:absolute;right:10px;top:10px;bottom:10px;width:30px;z-index:560;display:none;pointer-events:none}
+  #radar .track{position:absolute;left:50%;transform:translateX(-50%);top:0;bottom:0;width:4px;background:rgba(255,255,255,.18);border-radius:2px}
+  #radar .me{position:absolute;left:50%;bottom:-2px;transform:translateX(-50%);width:12px;height:12px;border-radius:50%;background:#1a6abf;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.6)}
+  .radarDot{position:absolute;left:50%;transform:translate(-50%,-50%);width:18px;height:18px;border-radius:50%;border:2px solid rgba(255,255,255,.85);box-shadow:0 1px 4px rgba(0,0,0,.6)}
+  .radarDot.t0{background:#9aa3af}
+  .radarDot.t1{background:#ffcf3f}
+  .radarDot.t2{background:#ff4d4d;animation:radarPulse .9s ease-in-out infinite}
+  @keyframes radarPulse{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.25)}}
 </style>
 </head>
 <body>
   <div id="stage">
     <div id="map"></div>
     <canvas id="wind-canvas"></canvas>
+    <div id="radar"><div class="track"></div><div class="me"></div></div>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
@@ -288,7 +298,8 @@
         try {
           const d = JSON.parse(e.data);
           if (typeof d.wind === "boolean") { windEnabled = d.wind; }
-          if (d.offline) { goOffline(); return; }
+          if (Array.isArray(d.radar)) { renderRadar(d.radar); return; }
+          if (d.offline) { goOffline(); renderRadar([]); return; }
           if (d.hidden) { setStale(true); armStale(); return; }
           if (typeof d.lat === "number") {
             place(d.lat, d.lng, d.hdg);
@@ -303,6 +314,24 @@
       };
       ws.onclose = () => { setTimeout(connect, 2000); };
       ws.onerror = () => ws.close();
+    }
+
+    // Varia radar strip: place a dot per vehicle by distance (far=top, near=bottom),
+    // colored by threat. Empty list hides the strip.
+    const RADAR_MAXD = 150;
+    function renderRadar(targets) {
+      const wrap = document.getElementById("radar");
+      if (!wrap) return;
+      wrap.querySelectorAll(".radarDot").forEach(el => el.remove());
+      if (!targets || !targets.length) { wrap.style.display = "none"; return; }
+      wrap.style.display = "block";
+      for (const t of targets) {
+        const el = document.createElement("div");
+        el.className = "radarDot " + (t.threat >= 2 ? "t2" : t.threat >= 1 ? "t1" : "t0");
+        const frac = Math.max(0, Math.min(1, (t.dist || 0) / RADAR_MAXD));
+        el.style.top = ((1 - frac) * 100) + "%";
+        wrap.appendChild(el);
+      }
     }
     connect();
   </script>
