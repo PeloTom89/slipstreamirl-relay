@@ -237,6 +237,22 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Static preview of the Twitch extension (app's Overlay → Extension tab). Serves
+  // the copied extension assets under /ext/… so the app can load them with ?relay.
+  if (req.method === "GET" && pathOnly.startsWith("/ext/")) {
+    const rel = pathOnly.replace(/^\/ext\//, "");
+    if (rel.includes("..")) { res.writeHead(403); res.end(); return; }
+    const type = rel.endsWith(".html") ? "text/html"
+      : rel.endsWith(".js") ? "application/javascript"
+      : rel.endsWith(".css") ? "text/css" : "application/octet-stream";
+    fs.readFile(path.join(__dirname, "ext", rel), (err, data) => {
+      if (err) { res.writeHead(404); res.end("not found"); return; }
+      res.writeHead(200, { "Content-Type": type, "Access-Control-Allow-Origin": "*" });
+      res.end(data);
+    });
+    return;
+  }
+
   const file = PAGES[pathOnly];
   if (file) {
     fs.readFile(path.join(__dirname, file), "utf8", (err, html) => {

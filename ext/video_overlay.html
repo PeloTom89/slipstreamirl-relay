@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SlipstreamIRL overlay</title>
+<link rel="stylesheet" href="vendor/leaflet.css" />
+<style>
+  html,body{height:100%;margin:0;background:transparent;overflow:hidden;
+    font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  #wrap{position:fixed;inset:0;pointer-events:none}
+  /* Karoo "device" anchored bottom-left over the video. */
+  /* Definite width (= 0.62 × height) so the device never resizes with digit count;
+     only the resize grip changes it. Cards shrink to fit (min-width:0 below). */
+  #device{position:absolute;left:2vmin;top:2vmin;height:60vh;width:37.2vh;
+    font-size:1.4vh;background:#0c0d10;border-radius:1.6em;padding:0.8em 0.7em;
+    box-sizing:border-box;display:none;flex-direction:column;box-shadow:inset 0 0 0 2px #1c1f26}
+  #device.on{display:flex}
+  #screen{flex:1;background:#fff;border-radius:0.7em;overflow:hidden;display:flex;flex-direction:column;position:relative}
+  /* Brand name + an inline ⓘ, centered together; ⓘ dims the device + opens a menu. */
+  #brand{position:relative;display:flex;align-items:center;justify-content:center;gap:0.4em;padding:0.25em 0.6em 0.15em}
+  .brandName{color:#7a8089;font-size:1.4em;font-weight:800;letter-spacing:0.12em}
+  #infoBtn{pointer-events:auto;background:none;border:0;padding:0;cursor:pointer;
+    color:#9aa3af;font-size:1.3em;line-height:1}
+  /* Dim scrim + centered control menu, shown when #device has .ctrlsOpen. */
+  #ctrlScrim{position:absolute;inset:0;background:rgba(0,0,0,.62);border-radius:1.6em;
+    z-index:900;display:none;pointer-events:auto}
+  /* Menu fills the entire device/map space; buttons split the height evenly. */
+  #ctrlsPop{position:absolute;inset:0;padding:0.8em;box-sizing:border-box;z-index:1000;
+    display:none;flex-direction:column;gap:0.6em;pointer-events:auto}
+  #device.ctrlsOpen #ctrlScrim{display:block}
+  #device.ctrlsOpen #ctrlsPop{display:flex}
+  .ctrlBtn{flex:1;display:flex;align-items:center;justify-content:center;gap:0.6em;
+    pointer-events:auto;cursor:pointer;background:rgba(22,26,32,.96);border:2px solid #6b7686;
+    border-radius:0.7em;color:#e8eaed;font-size:1.4em;font-weight:700;min-width:0}
+  .ctrlBtn svg{width:1.3em;height:1.3em;flex:0 0 auto;stroke:currentColor}
+  /* Settings menu: grouped sections with toggle switches, a corner picker, size steppers. */
+  #ctrlsPop{overflow:auto}
+  .ctrlSection{display:flex;flex-direction:column;gap:0.45em;pointer-events:auto}
+  .ctrlRow{display:flex;align-items:center;gap:0.5em;background:rgba(22,26,32,.96);
+    border:2px solid #6b7686;border-radius:0.7em;padding:0.45em 0.7em;color:#e8eaed;font-size:1.25em;font-weight:700}
+  .ctrlRow .rowlbl{display:flex;align-items:center;gap:0.5em;min-width:0}
+  .ctrlRow .rowlbl svg{width:1.2em;height:1.2em;flex:0 0 auto;stroke:currentColor}
+  .ctrlRow .rowval{margin-left:auto;font-size:0.82em;font-weight:700;color:#9aa3af}
+  .tgl{flex:0 0 auto;width:2.7em;height:1.45em;border-radius:1em;background:#374151;border:0;
+    position:relative;cursor:pointer;transition:background .2s;margin-left:0.4em}
+  .ctrlRow .rowlbl + .tgl{margin-left:auto}
+  .tgl::after{content:"";position:absolute;top:0.15em;left:0.15em;width:1.15em;height:1.15em;
+    border-radius:50%;background:#9aa3af;transition:transform .2s,background .2s}
+  .tgl.on{background:#1f6b50}
+  .tgl.on::after{transform:translateX(1.25em);background:#37e6a4}
+  .secLbl{color:#8b919a;font-size:1.05em;font-weight:800;letter-spacing:0.06em;padding-left:0.2em}
+  .cornerGrid{display:grid;grid-template-columns:1fr 1fr;gap:0.4em}
+  .cornerBtn{aspect-ratio:1.7;display:flex;align-items:center;justify-content:center;cursor:pointer;
+    background:rgba(22,26,32,.96);border:2px solid #6b7686;border-radius:0.6em;color:#9aa3af;font-size:1.6em;font-weight:800}
+  .cornerBtn.sel{border-color:#37e6a4;color:#37e6a4}
+  .sizeRow{display:flex;align-items:center;gap:0.5em}
+  .sizeBtn{flex:1;height:2.1em;border-radius:0.6em;border:2px solid #6b7686;background:rgba(22,26,32,.96);
+    color:#e8eaed;font-size:1.5em;font-weight:800;cursor:pointer}
+  /* Gear button — opens the settings menu, sits in the map's top-left. */
+  .gearbtn{position:absolute;left:0.4em;top:0.4em;z-index:550;pointer-events:auto}
+  #topbar{display:flex;justify-content:space-between;align-items:center;
+    padding:0.4em 0.8em;color:#0c0d10;font-weight:700;font-size:1.8em;font-variant-numeric:tabular-nums}
+  #cards{display:flex;gap:0.5em;padding:0.35em 0.5em 0.5em}
+  .card{flex:1;min-width:0;border:1px solid #e6e8eb;border-radius:0.6em;padding:0.4em 0.7em}
+  .card .lbl{display:flex;align-items:center;justify-content:space-between;color:#8b919a;font-size:0.72em;font-weight:700;letter-spacing:0.06em}
+  .card .lbl svg{width:1.2em;height:1.2em}
+  .card .val{color:#0c0d10;font-weight:800;font-size:2.5em;line-height:1.05;font-variant-numeric:tabular-nums;margin-top:0.05em}
+  .card .val .unit{font-size:0.4em;font-weight:700;color:#8b919a;margin-left:0.3em}
+  .card .val span[id]{transition:color .25s ease}
+  #mapwrap{flex:1;position:relative;background:#e9e7e2;pointer-events:auto}
+  #map{position:absolute;inset:0;width:100%;height:100%;background:transparent}
+  /* Always-visible map controls (zoom + recenter). */
+  #mapctrls{position:absolute;right:0.4em;bottom:0.4em;z-index:550;display:flex;flex-direction:column;gap:0.25em;pointer-events:auto}
+  .mapbtn{width:1.8em;height:1.8em;border:0;border-radius:0.4em;background:rgba(10,11,13,.82);
+    color:#fff;font-size:1.1em;font-weight:800;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;
+    box-shadow:0 1px 3px rgba(0,0,0,.5)}
+  .mapbtn svg{width:1.1em;height:1.1em;stroke:currentColor}
+  .leaflet-container{background:#e9e7e2}
+  /* Varia rear-radar strip: left edge of the map (below the gear), dots by distance. */
+  #radar{position:absolute;left:0.4em;top:2.8em;bottom:0.4em;width:1.8em;z-index:560;display:none;pointer-events:none}
+  #radar .track{position:absolute;left:50%;transform:translateX(-50%);top:0;bottom:0;width:0.22em;background:rgba(255,255,255,.2);border-radius:0.11em}
+  #radar .me{position:absolute;left:50%;top:-0.1em;transform:translateX(-50%);width:0.75em;height:0.75em;border-radius:50%;background:#1a6abf;border:0.12em solid #fff}
+  .radarDot{position:absolute;left:50%;transform:translate(-50%,-50%);width:1.15em;height:1.15em;border-radius:50%;border:0.12em solid rgba(255,255,255,.85);box-shadow:0 1px 3px rgba(0,0,0,.6)}
+  .radarDot.t0{background:#9aa3af}
+  .radarDot.t1{background:#ffcf3f}
+  .radarDot.t2{background:#ff4d4d;animation:radarPulse .9s ease-in-out infinite}
+  @keyframes radarPulse{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.25)}}
+  #wind-canvas{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:500}
+  .me-wrap{position:absolute;left:0;top:0;pointer-events:none}
+  .me-halo,.me-icon{position:absolute;left:0;top:0;transform:translate(-50%,-50%)}
+  .me-wrap.stale .me-halo{display:none}
+  .leaflet-marker-icon.me-marker{background:none;border:none}
+  .pulse-ring{width:40px;height:40px;border-radius:50%;border:3px solid #1a6abf;box-sizing:border-box;animation:pulse-ring 2.6s ease-out infinite}
+  @keyframes pulse-ring{0%{transform:scale(0.6);opacity:0.9}100%{transform:scale(2.2);opacity:0}}
+  .qmark{width:34px;height:34px;border-radius:50%;background:rgba(15,23,38,.88);border:2px solid #4d96ff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.55);animation:qpulse 1.4s ease-in-out infinite}
+  .qmark svg{width:18px;height:28px}
+  @keyframes qpulse{0%,100%{transform:scale(1);opacity:.8}50%{transform:scale(1.18);opacity:1}}
+  #hint{position:absolute;left:2vmin;bottom:2vmin;color:#fff;background:rgba(0,0,0,.55);
+    padding:6px 10px;border-radius:8px;font-size:13px}
+  /* Per-viewer hide: collapse the device; a small pill brings it back. */
+  #device.vhide{display:none !important}
+  #showPill{position:absolute;left:2vmin;top:2vmin;pointer-events:auto;display:none;
+    background:rgba(10,11,13,.8);color:#cfe0ff;border:1px solid #1c1f26;border-radius:8px;
+    padding:6px 12px;font-size:13px;font-weight:600;cursor:pointer}
+  /* WIND label shows the cardinal direction the wind is coming FROM (top-right). */
+  .windCard{font-weight:800;color:#8b919a}
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="device">
+      <div id="screen">
+        <div id="topbar"><span id="elapsed">0:00:00</span><span id="temp">--°</span><span id="clock">--:--</span></div>
+        <div id="cards">
+          <div class="card"><div class="lbl"><span>SPEED</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="#8b919a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18 a8 8 0 1 1 16 0"/><path d="M12 18 L15.5 11"/><circle cx="12" cy="18" r="1"/></svg></div>
+            <div class="val"><span id="speed">0.0</span><span class="unit" id="speedUnit">mph</span></div></div>
+          <div class="card"><div class="lbl"><span>DISTANCE</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="#8b919a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8 18 H14 a4 4 0 0 0 0-8 H10 a4 4 0 0 1 0-8"/></svg></div>
+            <div class="val"><span id="dist">0.0</span><span class="unit" id="distUnit">mi</span></div></div>
+          <div class="card"><div class="lbl"><span>WIND</span><span id="windDir" class="windCard">--</span></div>
+            <div class="val"><span id="wind">--</span><span class="unit" id="windUnit">mph</span></div></div>
+        </div>
+        <div id="cards">
+          <div class="card"><div class="lbl"><span>3S POWER</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="#8b919a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 2 4 14 12 14 11 22 20 10 12 10 13 2"/></svg></div>
+            <div class="val"><span id="power">--</span><span class="unit">W</span></div></div>
+          <div class="card"><div class="lbl"><span>CADENCE</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="#8b919a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 12 L12 7 M12 12 L16 14"/></svg></div>
+            <div class="val"><span id="cadence">--</span><span class="unit">rpm</span></div></div>
+          <div class="card"><div class="lbl"><span>HEART</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="#8b919a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg></div>
+            <div class="val"><span id="hr">--</span><span class="unit">bpm</span></div></div>
+        </div>
+        <div id="mapwrap"><div id="map"></div><canvas id="wind-canvas"></canvas>
+          <div id="radar"><div class="track"></div><div class="me"></div></div>
+          <button id="gearBtn" class="mapbtn gearbtn" aria-label="Settings" title="Settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+          <div id="mapctrls">
+            <button id="zinBtn" class="mapbtn" aria-label="Zoom in" title="Zoom in">+</button>
+            <button id="zoutBtn" class="mapbtn" aria-label="Zoom out" title="Zoom out">−</button>
+            <button id="recenterBtn" class="mapbtn" aria-label="Recenter on rider" title="Recenter on rider">
+              <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><polygon points="12 3 19 20 12 16 5 20 12 3"/></svg>
+            </button>
+          </div>
+        </div>
+      </div>
+      <div id="brand">
+        <span class="brandName">SLIPSTREAMIRL</span>
+      </div>
+      <div id="ctrlScrim"></div>
+      <div id="ctrlsPop">
+        <div class="ctrlSection">
+          <div class="ctrlRow"><span class="rowlbl">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18v10H3zM7 7v3M11 7v5M15 7v3M19 7v5"/></svg>
+            Units</span><span class="rowval" id="unitsVal">Imperial</span><button id="unitsTgl" class="tgl" aria-label="Toggle units" title="Switch units (your view only)"></button></div>
+          <div class="ctrlRow"><span class="rowlbl">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V11M9 20V5M14 20v-7M19 20V8"/></svg>
+            Effort Zones</span><button id="zonesTgl" class="tgl on" aria-label="Toggle effort zones" title="Effort zone colors (your view only)"></button></div>
+          <div class="ctrlRow"><span class="rowlbl">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.6 4.6A2 2 0 1 1 11 8H2M12.6 19.4A2 2 0 1 0 14 16H2M17.7 7.7A2.5 2.5 0 1 1 19.5 12H2"/></svg>
+            Wind Arrows</span><button id="windTgl" class="tgl on" aria-label="Toggle wind arrows" title="Wind arrows (your view only)"></button></div>
+        </div>
+        <div class="ctrlSection">
+          <span class="secLbl">POSITION</span>
+          <div class="cornerGrid">
+            <button class="cornerBtn" data-corner="tl" aria-label="Top left">↖</button>
+            <button class="cornerBtn" data-corner="tr" aria-label="Top right">↗</button>
+            <button class="cornerBtn" data-corner="bl" aria-label="Bottom left">↙</button>
+            <button class="cornerBtn" data-corner="br" aria-label="Bottom right">↘</button>
+          </div>
+          <span class="secLbl">SIZE</span>
+          <div class="sizeRow">
+            <button id="sizeDown" class="sizeBtn" aria-label="Smaller">−</button>
+            <button id="sizeUp" class="sizeBtn" aria-label="Larger">+</button>
+          </div>
+        </div>
+        <div class="ctrlSection" style="flex-direction:row">
+          <button id="hideBtn" class="ctrlBtn" aria-label="Hide overlay" title="Hide overlay">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.4 5.1A9.5 9.5 0 0 1 12 4.8c5 0 8.5 4 9.5 6-.4.8-1.2 2-2.4 3.1M6.2 6.2C3.9 7.6 2.6 9.6 2 11c1 2 4.5 6 10 6 1 0 2-.1 2.9-.4"/></svg>
+            <span>Hide</span></button>
+          <button id="backBtn" class="ctrlBtn" aria-label="Back">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            <span>Back</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="hint">SlipstreamIRL: waiting for the broadcaster to configure the relay…</div>
+  <button id="showPill">▸ Show SlipstreamIRL</button>
+
+  <script src="https://extension-files.twitch.tv/helper/v1/twitch-ext.min.js"></script>
+  <script src="vendor/leaflet.js"></script>
+  <script src="overlay.js"></script>
+</body>
+</html>
