@@ -30,6 +30,20 @@ function windOn() { return viewerWind !== null ? viewerWind : broadcasterWind; }
 // Wind arrows move at the wind's real ground speed for the map's zoom/latitude,
 // amplified by this factor so it's visible (1 = literal, ~frozen at zoom 16).
 const WIND_EXAGGERATION = 8;
+// Course-up map rotation (per viewer). Default on (map spins so travel points up,
+// like a car GPS); the gear menu's "North Up" toggle locks north-up. Persisted.
+let northUp = false;
+try { northUp = localStorage.getItem("slipNorthUp") === "1"; } catch {}
+let bearingCont = 0;             // continuous (un-wrapped) degrees so transitions take the short way
+const maprotEl = document.getElementById("maprot");
+function applyBearing() {
+  if (!maprotEl) return;
+  const desired = northUp ? 0 : -(lastHdg >= 0 ? lastHdg : 0);
+  let d = desired - (bearingCont % 360);
+  while (d > 180) d -= 360; while (d < -180) d += 360;
+  bearingCont += d;
+  maprotEl.style.setProperty("--bearing", bearingCont + "deg");
+}
 let zones = null;  // latest {zones:{enabled,...}} from the relay (declared up top to avoid TDZ)
 let viewerZones = null;
 try { const z = localStorage.getItem("slipZones"); if (z === "on") viewerZones = true; else if (z === "off") viewerZones = false; } catch {}
@@ -39,6 +53,7 @@ function updateToggleLabels() {
   const ut = document.getElementById("unitsTgl"); if (ut) ut.classList.toggle("on", units === "metric");
   const zt = document.getElementById("zonesTgl"); if (zt) zt.classList.toggle("on", zonesActive());
   const wt = document.getElementById("windTgl"); if (wt) wt.classList.toggle("on", windOn());
+  const nt = document.getElementById("northTgl"); if (nt) nt.classList.toggle("on", northUp);
 }
 
 const deviceEl = document.getElementById("device");
@@ -144,6 +159,13 @@ if (windBtn) windBtn.addEventListener("click", () => {
   try { localStorage.setItem("slipWind", viewerWind ? "on" : "off"); } catch {}
   updateToggleLabels();
 });
+const northBtn = document.getElementById("northTgl");
+if (northBtn) northBtn.addEventListener("click", () => {
+  northUp = !northUp;
+  try { localStorage.setItem("slipNorthUp", northUp ? "1" : "0"); } catch {}
+  applyBearing();
+  updateToggleLabels();
+});
 updateToggleLabels();
 
 // Map controls (always-visible on the map): zoom in/out + recenter (resume follow).
@@ -244,6 +266,7 @@ function renderRadar(targets) {
 }
 function place(lat, lng, hdg) {
   lastHdg = hdg;
+  applyBearing();   // keep the map's course-up rotation in sync with heading
   const target = [lat, lng];
   const now = performance.now();
   if (!gotFix) {

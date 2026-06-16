@@ -7,13 +7,18 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <style>
   html,body{height:100%;margin:0;background:transparent;overflow:hidden}
-  #stage{height:100%;width:100%}
-  #map{height:100%;width:100%;background:transparent}
-  .leaflet-container{border-radius:16px;box-shadow:0 0 0 2px rgba(255,255,255,.15)}
+  #stage{height:100%;width:100%;position:relative;overflow:hidden;border-radius:16px;box-shadow:0 0 0 2px rgba(255,255,255,.15)}
   /* When embedded (e.g. inside the Karoo overlay) fill flush, no rounding/ring. */
-  .embed .leaflet-container{border-radius:0;box-shadow:none}
+  .embed #stage{border-radius:0;box-shadow:none}
+  /* Course-up rotation layer: holds the map + wind and rotates so travel points up.
+     Oversized + clipped by #stage so the spinning rectangle never shows blank corners. */
+  #maprot{position:absolute;left:50%;top:50%;width:160%;height:160%;
+    transform:translate(-50%,-50%) rotate(var(--bearing,0deg));transform-origin:center center;
+    transition:transform .5s ease-out;will-change:transform}
+  #map{height:100%;width:100%;background:transparent}
+  .leaflet-container{box-shadow:none}
   #wind-canvas{position:absolute;top:0;left:0;width:100%;height:100%;
-    pointer-events:none;z-index:500;border-radius:16px}
+    pointer-events:none;z-index:500}
   /* The rider marker is a real Leaflet marker glued to the rider's coordinates,
      so the map can be panned freely without detaching the icon from its true
      position. The halo/icon are centred on the marker's anchor point. */
@@ -48,8 +53,10 @@
 </head>
 <body>
   <div id="stage">
-    <div id="map"></div>
-    <canvas id="wind-canvas"></canvas>
+    <div id="maprot">
+      <div id="map"></div>
+      <canvas id="wind-canvas"></canvas>
+    </div>
     <div id="radar"><div class="track"></div><div class="me"></div></div>
   </div>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -78,6 +85,20 @@
     // Position tween: GPS fixes arrive ~every 3s; we glide between them each frame
     // so the rider + map move smoothly instead of snapping.
     let animFrom = null, animTo = null, animStart = 0, animDur = 3000, lastFixMs = 0;
+
+    // Course-up rotation: spin the map so the direction of travel points up (like a
+    // car GPS). Default on; ?north=1 keeps north up. bearingCont is kept continuous
+    // (un-wrapped) so the CSS transition always takes the short way around.
+    const maprotEl = document.getElementById("maprot");
+    let northUp = params.get("north") === "1";
+    let bearingCont = 0;
+    function applyBearing() {
+      const desired = northUp ? 0 : -(lastHdg >= 0 ? lastHdg : 0);
+      let d = desired - (bearingCont % 360);
+      while (d > 180) d -= 360; while (d < -180) d += 360;
+      bearingCont += d;
+      maprotEl.style.setProperty("--bearing", bearingCont + "deg");
+    }
 
     function armStale() {
       if (staleTimer) clearTimeout(staleTimer);
@@ -156,6 +177,7 @@
     // until the next fix is expected (measured from the last interval).
     function place(lat, lng, hdg) {
       lastHdg = hdg;
+      applyBearing();   // keep the map's course-up rotation in sync with heading
       const target = [lat, lng];
       const now = performance.now();
       if (!gotFix) {

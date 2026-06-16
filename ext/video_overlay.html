@@ -68,7 +68,11 @@
   .card .val{color:#0c0d10;font-weight:800;font-size:2.5em;line-height:1.05;font-variant-numeric:tabular-nums;margin-top:0.05em}
   .card .val .unit{font-size:0.4em;font-weight:700;color:#8b919a;margin-left:0.3em}
   .card .val span[id]{transition:color .25s ease}
-  #mapwrap{flex:1;position:relative;background:#e9e7e2;pointer-events:auto}
+  #mapwrap{flex:1;position:relative;background:#e9e7e2;pointer-events:auto;overflow:hidden}
+  /* Course-up rotation layer: oversized + clipped so spinning never shows blank corners. */
+  #maprot{position:absolute;left:50%;top:50%;width:160%;height:160%;
+    transform:translate(-50%,-50%) rotate(var(--bearing,0deg));transform-origin:center center;
+    transition:transform .5s ease-out;will-change:transform}
   #map{position:absolute;inset:0;width:100%;height:100%;background:transparent}
   /* Always-visible map controls (zoom + recenter). */
   #mapctrls{position:absolute;right:0.4em;bottom:0.4em;z-index:550;display:flex;flex-direction:column;gap:0.25em;pointer-events:auto}
@@ -133,7 +137,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="#8b919a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8z"/></svg></div>
             <div class="val"><span id="hr">--</span><span class="unit">bpm</span></div></div>
         </div>
-        <div id="mapwrap"><div id="map"></div><canvas id="wind-canvas"></canvas>
+        <div id="mapwrap"><div id="maprot"><div id="map"></div><canvas id="wind-canvas"></canvas></div>
           <div id="radar"><div class="track"></div><div class="me"></div></div>
           <button id="gearBtn" class="mapbtn gearbtn" aria-label="Settings" title="Settings">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -162,6 +166,9 @@
           <div class="ctrlRow"><span class="rowlbl">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.6 4.6A2 2 0 1 1 11 8H2M12.6 19.4A2 2 0 1 0 14 16H2M17.7 7.7A2.5 2.5 0 1 1 19.5 12H2"/></svg>
             Wind Arrows</span><button id="windTgl" class="tgl on" aria-label="Toggle wind arrows" title="Wind arrows (your view only)"></button></div>
+          <div class="ctrlRow"><span class="rowlbl">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
+            North Up</span><button id="northTgl" class="tgl" aria-label="North up vs course up" title="North up vs course up (your view only)"></button></div>
         </div>
         <div class="ctrlSection">
           <span class="secLbl">POSITION</span>
