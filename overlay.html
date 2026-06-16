@@ -341,11 +341,21 @@
     // Varia radar strip: place a dot per vehicle by distance (you/near at the top,
     // far behind at the bottom), colored by threat. Empty list hides the strip.
     const RADAR_MAXD = 150;
+    const RADAR_CLEAR_GRACE = 2500; // ms — ignore brief empty frames (a car passing) before hiding
+    let radarLastSeen = 0;
     function renderRadar(targets) {
       const wrap = document.getElementById("radar");
       if (!wrap) return;
+      if (!targets || !targets.length) {
+        // A passing car can momentarily blank the whole list; keep the other vehicles
+        // on screen until the road's been clear a beat, so they don't flicker out.
+        if (Date.now() - radarLastSeen < RADAR_CLEAR_GRACE) return;
+        wrap.querySelectorAll(".radarDot").forEach(el => el.remove());
+        wrap.style.display = "none";
+        return;
+      }
+      radarLastSeen = Date.now();
       wrap.querySelectorAll(".radarDot").forEach(el => el.remove());
-      if (!targets || !targets.length) { wrap.style.display = "none"; return; }
       wrap.style.display = "block";
       for (const t of targets) {
         const el = document.createElement("div");
