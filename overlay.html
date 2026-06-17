@@ -70,6 +70,8 @@
     if (params.get("embed")) document.documentElement.classList.add("embed");
     // Wind arrows default on; ?wind=off disables them (in-app toggle can override live).
     let windEnabled = params.get("wind") !== "off";
+    // Breadcrumb trail on by default; ?trail=off hides it.
+    let trailOn = params.get("trail") !== "off";
 
     const map = L.map("map", { zoomControl:false, attributionControl:false }).setView([0,0], ZOOM);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -98,6 +100,33 @@
       while (d > 180) d -= 360; while (d < -180) d += 360;
       bearingCont += d;
       maprotEl.style.setProperty("--bearing", bearingCont + "deg");
+    }
+
+    // Breadcrumb trail: a polyline of the route, fed by the live position stream (the
+    // relay replays the whole route on connect). Decimated + capped to stay light.
+    const TRAIL_MIN_M = 10, TRAIL_MAX = 4000;
+    let trailPts = [], trailLine = null;
+    function trailDistM(a, b) {
+      const R = 6371000, dLat = (b[0]-a[0])*Math.PI/180, dLng = (b[1]-a[1])*Math.PI/180,
+        lat = (a[0]+b[0])/2*Math.PI/180, x = dLng*Math.cos(lat);
+      return Math.sqrt(dLat*dLat + x*x) * R;
+    }
+    function ensureTrail() {
+      if (!trailLine) trailLine = L.polyline([], { color: "#1a6abf", weight: 4, opacity: 0.65, lineJoin: "round", lineCap: "round" });
+      if (trailOn && !map.hasLayer(trailLine)) trailLine.addTo(map);
+    }
+    function addTrailPoint(lat, lng) {
+      ensureTrail();
+      const pt = [lat, lng];
+      if (trailPts.length && trailDistM(trailPts[trailPts.length-1], pt) < TRAIL_MIN_M) return;
+      trailPts.push(pt);
+      if (trailPts.length > TRAIL_MAX) trailPts.shift();
+      trailLine.setLatLngs(trailPts);
+    }
+    function setTrail(pts) {
+      ensureTrail();
+      trailPts = Array.isArray(pts) ? pts.slice(-TRAIL_MAX) : [];
+      trailLine.setLatLngs(trailPts);
     }
 
     function armStale() {
@@ -171,6 +200,7 @@
       gotFix = false;
       animFrom = animTo = null;
       if (marker) { map.removeLayer(marker); marker = null; markerLL = null; }
+      trailPts = []; if (trailLine) trailLine.setLatLngs([]); // clear the breadcrumb trail
     }
 
     // Each fix sets a new tween target; animateRider glides there over the time
@@ -178,6 +208,7 @@
     function place(lat, lng, hdg) {
       lastHdg = hdg;
       applyBearing();   // keep the map's course-up rotation in sync with heading
+      addTrailPoint(lat, lng);
       const target = [lat, lng];
       const now = performance.now();
       if (!gotFix) {
@@ -321,6 +352,7 @@
           const d = JSON.parse(e.data);
           if (typeof d.wind === "boolean") { windEnabled = d.wind; }
           if (Array.isArray(d.radar)) { renderRadar(d.radar); return; }
+          if (Array.isArray(d.path)) { setTrail(d.path); return; }
           if (d.offline) { goOffline(); renderRadar([]); return; }
           if (d.hidden) { setStale(true); armStale(); return; }
           if (typeof d.lat === "number") {

@@ -46,14 +46,24 @@ function broadcast(loc) {
   else emit(loc);
 }
 
+// Approx distance in metres between two [lat,lng] points (for breadcrumb decimation).
+const TRAIL_MIN_M = 10;    // only record a breadcrumb point after moving this far
+const TRAIL_MAX = 4000;    // cap the cached path (~40 km at 10 m spacing)
+function distM(a, b) {
+  const R = 6371000, dLat = (b[0] - a[0]) * Math.PI / 180, dLng = (b[1] - a[1]) * Math.PI / 180;
+  const lat = (a[0] + b[0]) / 2 * Math.PI / 180, x = dLng * Math.cos(lat);
+  return Math.sqrt(dLat * dLat + x * x) * R;
+}
+
 function emit(loc) {
   let payload;
   if (loc.offline) {
-    // Stream stopped — clear the cached position and the ride start so new overlays
-    // don't snap to them.
+    // Stream stopped — clear the cached position, ride start and breadcrumb path so
+    // new overlays start fresh.
     lastLocation = null;
     lastLiveStart = null;
     lastRadar = null;
+    lastPath = [];
     payload = JSON.stringify({ offline: true, ts: Date.now() });
   } else if (Array.isArray(loc.radar)) {
     // Garmin Varia radar targets [{speed,dist,threat}] — cache the latest frame for
@@ -87,6 +97,13 @@ function emit(loc) {
   } else {
     lastLocation = { lat: loc.lat, lng: loc.lng, acc: loc.acc ?? null, hdg: loc.hdg ?? null,
         spd: loc.spd ?? null, dist: loc.dist ?? null, ts: Date.now() };
+    // Append to the breadcrumb path (decimated) so late-joining overlays get the
+    // whole route, not just the part since they connected.
+    const pt = [loc.lat, loc.lng];
+    if (!lastPath.length || distM(lastPath[lastPath.length - 1], pt) >= TRAIL_MIN_M) {
+      lastPath.push(pt);
+      if (lastPath.length > TRAIL_MAX) lastPath.shift();
+    }
     payload = JSON.stringify(lastLocation);
   }
   for (const o of overlays) if (o.readyState === o.OPEN) o.send(payload, () => {});
@@ -275,6 +292,7 @@ let lastSensors = null;  // cached power/cadence/hr so a freshly-opened overlay 
 let lastZones = null;    // cached effort-zone anchors so a freshly-opened overlay syncs
 let lastLiveStart = null;// cached go-live epoch ms so the elapsed timer survives overlay refreshes
 let lastRadar = null;    // cached Varia radar targets so a freshly-opened overlay syncs
+let lastPath = [];       // cached breadcrumb path [[lat,lng],…] so late overlays get the whole route
 let delayMs = 4500;      // hold overlay broadcasts this long to sync with Twitch stream latency; set by the app
 
 wss.on("connection", (ws, req) => {
@@ -291,6 +309,7 @@ wss.on("connection", (ws, req) => {
     if (lastZones) ws.send(JSON.stringify({ zones: lastZones }));
     if (lastLiveStart) ws.send(JSON.stringify({ liveStart: lastLiveStart }));
     if (lastRadar) ws.send(JSON.stringify({ radar: lastRadar }));
+    if (lastPath.length) ws.send(JSON.stringify({ path: lastPath }));
     if (lastLocation) ws.send(JSON.stringify(lastLocation));
     ws.on("close", () => overlays.delete(ws));
     return;

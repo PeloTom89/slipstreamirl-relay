@@ -44,6 +44,9 @@ function applyBearing() {
   bearingCont += d;
   maprotEl.style.setProperty("--bearing", bearingCont + "deg");
 }
+// Breadcrumb trail on/off (per viewer, persisted). Default on.
+let trailOn = true;
+try { trailOn = localStorage.getItem("slipTrail") !== "off"; } catch {}
 let zones = null;  // latest {zones:{enabled,...}} from the relay (declared up top to avoid TDZ)
 let viewerZones = null;
 try { const z = localStorage.getItem("slipZones"); if (z === "on") viewerZones = true; else if (z === "off") viewerZones = false; } catch {}
@@ -54,6 +57,7 @@ function updateToggleLabels() {
   const zt = document.getElementById("zonesTgl"); if (zt) zt.classList.toggle("on", zonesActive());
   const wt = document.getElementById("windTgl"); if (wt) wt.classList.toggle("on", windOn());
   const nt = document.getElementById("northTgl"); if (nt) nt.classList.toggle("on", northUp);
+  const tt = document.getElementById("trailTgl"); if (tt) tt.classList.toggle("on", trailOn);
 }
 
 const deviceEl = document.getElementById("device");
@@ -166,6 +170,13 @@ if (northBtn) northBtn.addEventListener("click", () => {
   applyBearing();
   updateToggleLabels();
 });
+const trailBtn = document.getElementById("trailTgl");
+if (trailBtn) trailBtn.addEventListener("click", () => {
+  trailOn = !trailOn;
+  try { localStorage.setItem("slipTrail", trailOn ? "on" : "off"); } catch {}
+  applyTrailVis();
+  updateToggleLabels();
+});
 updateToggleLabels();
 
 // Map controls (always-visible on the map): zoom in/out + recenter (resume follow).
@@ -211,6 +222,38 @@ let marker = null, markerLL = null;
 let animFrom = null, animTo = null, animStart = 0, animDur = 3000, lastFixMs = 0;
 const STALE_MS = 30000;
 
+// Breadcrumb trail: a polyline of the route. Points come from the live position stream;
+// the relay also replays the whole route on connect. Decimated + capped to stay light.
+const TRAIL_MIN_M = 10, TRAIL_MAX = 4000;
+let trailPts = [], trailLine = null;
+function trailDistM(a, b) {
+  const R = 6371000, dLat = (b[0]-a[0])*Math.PI/180, dLng = (b[1]-a[1])*Math.PI/180,
+    lat = (a[0]+b[0])/2*Math.PI/180, x = dLng*Math.cos(lat);
+  return Math.sqrt(dLat*dLat + x*x) * R;
+}
+function ensureTrail() {
+  if (!trailLine) trailLine = L.polyline([], { color: "#1a6abf", weight: 4, opacity: 0.65, lineJoin: "round", lineCap: "round" });
+  if (trailOn && !map.hasLayer(trailLine)) trailLine.addTo(map);
+}
+function addTrailPoint(lat, lng) {
+  ensureTrail();
+  const pt = [lat, lng];
+  if (trailPts.length && trailDistM(trailPts[trailPts.length-1], pt) < TRAIL_MIN_M) return;
+  trailPts.push(pt);
+  if (trailPts.length > TRAIL_MAX) trailPts.shift();
+  trailLine.setLatLngs(trailPts);
+}
+function setTrail(pts) {            // relay replay of the whole route on connect
+  ensureTrail();
+  trailPts = Array.isArray(pts) ? pts.slice(-TRAIL_MAX) : [];
+  trailLine.setLatLngs(trailPts);
+}
+function applyTrailVis() {
+  ensureTrail();
+  if (trailOn) { if (!map.hasLayer(trailLine)) trailLine.addTo(map); }
+  else if (map.hasLayer(trailLine)) map.removeLayer(trailLine);
+}
+
 function armStale() {
   if (staleTimer) clearTimeout(staleTimer);
   staleTimer = setTimeout(() => setStale(true), STALE_MS);
@@ -245,6 +288,7 @@ function goOffline() {
   if (marker) { map.removeLayer(marker); marker = null; markerLL = null; }
   startTs = null; if (elElapsed) elElapsed.textContent = "0:00:00"; // stream ended — reset ride timer
   renderRadar([]); // clear the radar strip
+  trailPts = []; if (trailLine) trailLine.setLatLngs([]); // clear the breadcrumb trail
 }
 
 // Varia radar strip: a dot per vehicle by distance (you/near at the top, far behind
@@ -277,6 +321,7 @@ function renderRadar(targets) {
 function place(lat, lng, hdg) {
   lastHdg = hdg;
   applyBearing();   // keep the map's course-up rotation in sync with heading
+  addTrailPoint(lat, lng);
   const target = [lat, lng];
   const now = performance.now();
   if (!gotFix) {
@@ -457,6 +502,7 @@ function connect() {
         return;
       }
       if (Array.isArray(d.radar)) { renderRadar(d.radar); return; }
+      if (Array.isArray(d.path)) { setTrail(d.path); return; }   // whole route replayed on connect
       if ("power" in d || "cadence" in d || "hr" in d) { setSensors(d); return; }
       if (d.offline) { goOffline(); setSpeed(0); return; }
       if (d.hidden) { setStale(true); armStale(); setSpeed(0); return; }
