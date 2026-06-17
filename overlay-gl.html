@@ -12,6 +12,8 @@
   #stage{position:relative;height:100%;width:100%;overflow:hidden;border-radius:16px;box-shadow:0 0 0 2px rgba(255,255,255,.15)}
   .embed #stage{border-radius:0;box-shadow:none}
   #map{position:absolute;inset:0}
+  /* Wind canvas overlays the map, screen-fixed; arrows are rotated by the map bearing. */
+  #wind-canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:500}
   .maplibregl-ctrl-attrib,.maplibregl-ctrl-bottom-right,.maplibregl-ctrl-bottom-left{display:none !important}
   /* rider marker */
   .me-wrap{position:relative;width:0;height:0;pointer-events:none}
@@ -33,6 +35,7 @@
 <body>
   <div id="stage">
     <div id="map"></div>
+    <canvas id="wind-canvas"></canvas>
     <div id="radar"><div class="track"></div><div class="me"></div></div>
   </div>
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
@@ -47,7 +50,7 @@
     // MapLibre uses [lng,lat]. OpenFreeMap = free vector tiles, no key.
     const map = new maplibregl.Map({
       container: "map",
-      style: "https://tiles.openfreemap.org/styles/liberty",
+      style: "https://tiles.openfreemap.org/styles/positron",
       center: [0, 0], zoom: ZOOM, bearing: 0,
       attributionControl: false, interactive: false, fadeDuration: 0,
     });
@@ -109,6 +112,8 @@
         map.easeTo({ center: ll, bearing, duration: 1000, easing: (t) => t });
       }
       pushTrail(lat, lng);
+      const now = Date.now();
+      if (now - lastWindFetch > 10 * 60 * 1000) { lastWindFetch = now; fetchWind(lat, lng); }
       meEl.classList.remove("stale");
       armStale();
     }
@@ -144,7 +149,53 @@
       }
     }
 
-    // TODO (next): wind arrows re-projected onto MapLibre; units/zones come via the Karoo overlay.
+    // ---- wind arrows (canvas over the map; rotated by the map bearing so wind stays
+    // in its true compass direction relative to the rotated map) ----
+    let windEnabled = params.get("wind") !== "off";
+    let windDir = null, windSpeed = 0;     // compass dir the wind blows FROM (deg), km/h
+    let lastWindFetch = 0, arrowOffsets = null, drawScale = 1;
+    const WIND_EXAGGERATION = 8;
+    const wcanvas = document.getElementById("wind-canvas");
+    const wctx = wcanvas.getContext("2d");
+    function resizeWind() {
+      const w = wcanvas.offsetWidth, h = wcanvas.offsetHeight;
+      if (w && h && (wcanvas.width !== w || wcanvas.height !== h)) { wcanvas.width = w; wcanvas.height = h; arrowOffsets = null; }
+      if (wcanvas.height) drawScale = Math.sqrt(wcanvas.height / 700);
+    }
+    window.addEventListener("resize", resizeWind); resizeWind();
+    async function fetchWind(lat, lng) {
+      try {
+        const r = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=wind_speed_10m,wind_direction_10m`);
+        const data = await r.json();
+        const spd = data.current.wind_speed_10m, dir = data.current.wind_direction_10m;
+        if (spd < 1) { windDir = null; } else { windDir = dir; windSpeed = spd; }
+      } catch {}
+    }
+    function animateWind() {
+      requestAnimationFrame(animateWind);
+      wctx.clearRect(0, 0, wcanvas.width, wcanvas.height);
+      if (!windEnabled || windDir === null || !gotFix) return;
+      const travel = Math.sqrt(wcanvas.width ** 2 + wcanvas.height ** 2) * 0.65, numArrows = 3;
+      if (arrowOffsets === null) arrowOffsets = Array.from({ length: numArrows }, (_, i) => -travel + i * (2 * travel / numArrows));
+      const cx = wcanvas.width / 2, cy = wcanvas.height / 2;   // rider is centred
+      const phi = (((windDir + 180) - map.getBearing()) * Math.PI) / 180; // blowing-TO, minus map bearing
+      const vx = Math.sin(phi), vy = -Math.cos(phi), angle = Math.atan2(vy, vx), s = 22 * drawScale;
+      const fadeZone = travel * 0.25, lat = map.getCenter().lat;
+      const mPerPx = 40075016.686 * Math.cos(lat * Math.PI / 180) / Math.pow(2, map.getZoom() + 8);
+      const pxPerFrame = ((windSpeed / 3.6) / mPerPx) / 60 * WIND_EXAGGERATION;
+      for (let i = 0; i < numArrows; i++) {
+        arrowOffsets[i] += pxPerFrame; if (arrowOffsets[i] > travel) arrowOffsets[i] = -travel;
+        const t = (arrowOffsets[i] + fadeZone) / (2 * fadeZone);
+        const alpha = (t >= 0 && t <= 1) ? Math.sin(Math.PI * t) * 0.95 : 0; if (alpha <= 0) continue;
+        const x = cx + vx * arrowOffsets[i], y = cy + vy * arrowOffsets[i];
+        wctx.save(); wctx.translate(x, y); wctx.rotate(angle); wctx.globalAlpha = alpha;
+        wctx.fillStyle = "#5b9cf6"; wctx.shadowColor = "rgba(30,80,200,0.5)"; wctx.shadowBlur = 8;
+        wctx.beginPath(); wctx.moveTo(s, 0); wctx.lineTo(-s * 0.5, -s * 0.55); wctx.lineTo(-s * 0.2, 0); wctx.lineTo(-s * 0.5, s * 0.55); wctx.closePath(); wctx.fill();
+        wctx.restore();
+      }
+      wctx.globalAlpha = 1;
+    }
+    animateWind();
 
     map.on("load", () => {
       map.addSource("trail", { type: "geojson", data: trailGeo() });
@@ -160,6 +211,7 @@
       ws.onmessage = (e) => {
         try {
           const d = JSON.parse(e.data);
+          if (typeof d.wind === "boolean") { windEnabled = d.wind; }
           if (Array.isArray(d.radar)) { renderRadar(d.radar); return; }
           if (Array.isArray(d.path)) { setTrail(d.path); return; }
           if (d.offline) { goOffline(); return; }
