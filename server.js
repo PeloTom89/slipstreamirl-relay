@@ -27,6 +27,7 @@ const CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
 // Control is the native SlipstreamIRL app now; "/" just returns a status line.
 const PAGES = {
   "/overlay": "overlay.html",
+  "/overlay-gl": "overlay-gl.html",   // MapLibre vector POC (upright labels on rotation)
   "/chat": "chat.html",
   "/karoo": "karoo.html",
 };

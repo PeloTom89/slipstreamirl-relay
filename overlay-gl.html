@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Location overlay (vector)</title>
+<!-- MapLibre GL: vector tiles render labels as live text, so street/landmark names stay
+     upright when the map rotates (course-up). Proof-of-concept at /overlay-gl. -->
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+<style>
+  html,body{height:100%;margin:0;background:transparent;overflow:hidden;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  #stage{position:relative;height:100%;width:100%;overflow:hidden;border-radius:16px;box-shadow:0 0 0 2px rgba(255,255,255,.15)}
+  .embed #stage{border-radius:0;box-shadow:none}
+  #map{position:absolute;inset:0}
+  .maplibregl-ctrl-attrib,.maplibregl-ctrl-bottom-right,.maplibregl-ctrl-bottom-left{display:none !important}
+  /* rider marker */
+  .me-wrap{position:relative;width:0;height:0;pointer-events:none}
+  .me-halo,.me-icon{position:absolute;left:0;top:0;transform:translate(-50%,-50%)}
+  .me-wrap.stale .me-halo{display:none}
+  .pulse-ring{width:40px;height:40px;border-radius:50%;border:3px solid #1a6abf;box-sizing:border-box;animation:pulse-ring 2.6s ease-out infinite}
+  @keyframes pulse-ring{0%{transform:translate(-50%,-50%) scale(0.6);opacity:0.9}100%{transform:translate(-50%,-50%) scale(2.2);opacity:0}}
+  /* Varia rear-radar strip (screen-fixed, unaffected by rotation). */
+  #radar{position:absolute;right:10px;top:10px;bottom:10px;width:30px;z-index:560;display:none;pointer-events:none}
+  #radar .track{position:absolute;left:50%;transform:translateX(-50%);top:0;bottom:0;width:4px;background:rgba(255,255,255,.18);border-radius:2px}
+  #radar .me{position:absolute;left:50%;top:-2px;transform:translateX(-50%);width:12px;height:12px;border-radius:50%;background:#1a6abf;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.6)}
+  .radarDot{position:absolute;left:50%;transform:translate(-50%,-50%);width:18px;height:18px;border-radius:50%;border:2px solid rgba(255,255,255,.85);box-shadow:0 1px 4px rgba(0,0,0,.6)}
+  .radarDot.t0{background:#9aa3af}
+  .radarDot.t1{background:#ffcf3f}
+  .radarDot.t2{background:#ff4d4d;animation:radarPulse .9s ease-in-out infinite}
+  @keyframes radarPulse{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.25)}}
+</style>
+</head>
+<body>
+  <div id="stage">
+    <div id="map"></div>
+    <div id="radar"><div class="track"></div><div class="me"></div></div>
+  </div>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script>
+    const RELAY_URL = location.origin.replace(/^http/, "ws");
+    const ZOOM = 16;
+    const params = new URLSearchParams(location.search);
+    if (params.get("embed")) document.documentElement.classList.add("embed");
+    let northUp = params.get("north") === "1";   // default course-up; ?north=1 keeps north up
+    let trailOn = params.get("trail") !== "off";
+
+    // MapLibre uses [lng,lat]. OpenFreeMap = free vector tiles, no key.
+    const map = new maplibregl.Map({
+      container: "map",
+      style: "https://tiles.openfreemap.org/styles/liberty",
+      center: [0, 0], zoom: ZOOM, bearing: 0,
+      attributionControl: false, interactive: false, fadeDuration: 0,
+    });
+
+    function cyclistSVG(hdg) {
+      return `<svg width="26" height="40" viewBox="-22 -33 44 66" style="filter:drop-shadow(0 3px 7px rgba(0,0,0,.75))">
+        <ellipse cx="0" cy="-27" rx="4.5" ry="11" fill="#111"/><ellipse cx="0" cy="27" rx="4.5" ry="11" fill="#111"/>
+        <rect x="-1.5" y="-15" width="3" height="42" rx="1.5" fill="#555"/>
+        <ellipse cx="0" cy="8" rx="9" ry="13" fill="#1a6abf"/><ellipse cx="0" cy="-4" rx="11" ry="5.5" fill="#1a6abf"/>
+        <line x1="-11" y1="-4" x2="-13" y2="-20" stroke="#1a6abf" stroke-width="3.5" stroke-linecap="round"/>
+        <line x1="11" y1="-4" x2="13" y2="-20" stroke="#1a6abf" stroke-width="3.5" stroke-linecap="round"/>
+        <line x1="-15" y1="-20" x2="15" y2="-20" stroke="#2a2a2a" stroke-width="3" stroke-linecap="round"/>
+        <ellipse cx="0" cy="-14" rx="8.5" ry="9.5" fill="#ffffff"/></svg>`;
+    }
+    const meEl = document.createElement("div");
+    meEl.className = "me-wrap";
+    meEl.innerHTML = '<div class="me-halo"><div class="pulse-ring"></div></div><div class="me-icon">' + cyclistSVG(0) + '</div>';
+    // rotationAlignment:"map" -> the cyclist (drawn pointing up) is rotated by heading in
+    // geographic space, so in course-up it lands pointing up; in north-up it points along travel.
+    const marker = new maplibregl.Marker({ element: meEl, rotationAlignment: "map", anchor: "center" });
+
+    let lastHdg = 0, gotFix = false, onMap = false;
+    let staleTimer = null;
+    const STALE_MS = 30000;
+    function armStale() { clearTimeout(staleTimer); staleTimer = setTimeout(() => meEl.classList.add("stale"), STALE_MS); }
+
+    // ---- breadcrumb trail (GeoJSON line layer) ----
+    const TRAIL_MIN_M = 25, TRAIL_MAX = 8000;
+    let trailPts = []; // [lng,lat]
+    function trailGeo() { return { type: "Feature", geometry: { type: "LineString", coordinates: trailPts } }; }
+    function distM(a, b) { // a,b = [lat,lng]
+      const R = 6371000, dLat = (b[0]-a[0])*Math.PI/180, dLng = (b[1]-a[1])*Math.PI/180;
+      const lat = (a[0]+b[0])/2*Math.PI/180, x = dLng*Math.cos(lat);
+      return Math.sqrt(dLat*dLat + x*x) * R;
+    }
+    function pushTrail(lat, lng) {
+      if (trailPts.length) { const L = trailPts[trailPts.length-1]; if (distM([L[1], L[0]], [lat, lng]) < TRAIL_MIN_M) return; }
+      trailPts.push([lng, lat]);
+      if (trailPts.length > TRAIL_MAX) trailPts.shift();
+      const s = map.getSource("trail"); if (s) s.setData(trailGeo());
+    }
+    function setTrail(pts) {
+      trailPts = (pts || []).slice(-TRAIL_MAX).map((p) => [p[1], p[0]]); // [lat,lng] -> [lng,lat]
+      const s = map.getSource("trail"); if (s) s.setData(trailGeo());
+    }
+
+    // ---- rider placement (course-up via native bearing) ----
+    function place(lat, lng, hdg) {
+      lastHdg = hdg;
+      const ll = [lng, lat];
+      const bearing = northUp ? 0 : (hdg >= 0 ? hdg : 0);
+      if (!gotFix) {
+        gotFix = true;
+        map.jumpTo({ center: ll, bearing });
+        marker.setLngLat(ll).setRotation(hdg >= 0 ? hdg : 0);
+        if (!onMap) { marker.addTo(map); onMap = true; }
+      } else {
+        marker.setRotation(hdg >= 0 ? hdg : 0);
+        map.easeTo({ center: ll, bearing, duration: 1000, easing: (t) => t });
+      }
+      pushTrail(lat, lng);
+      meEl.classList.remove("stale");
+      armStale();
+    }
+    // Keep the cyclist glued to the map centre while easeTo pans (we always follow the rider).
+    map.on("move", () => { if (gotFix) marker.setLngLat(map.getCenter()); });
+
+    function goOffline() {
+      clearTimeout(staleTimer); staleTimer = null; gotFix = false;
+      if (onMap) { marker.remove(); onMap = false; }
+      trailPts = []; const s = map.getSource("trail"); if (s) s.setData(trailGeo());
+      renderRadar([]);
+    }
+
+    // ---- Varia radar strip ----
+    const RADAR_MAXD = 150, RADAR_CLEAR_GRACE = 1000;
+    let radarLastSeen = 0;
+    function renderRadar(targets) {
+      const wrap = document.getElementById("radar"); if (!wrap) return;
+      if (!targets || !targets.length) {
+        if (Date.now() - radarLastSeen < RADAR_CLEAR_GRACE) return;
+        wrap.querySelectorAll(".radarDot").forEach((el) => el.remove());
+        wrap.style.display = "none"; return;
+      }
+      radarLastSeen = Date.now();
+      wrap.querySelectorAll(".radarDot").forEach((el) => el.remove());
+      wrap.style.display = "block";
+      for (const t of targets) {
+        const el = document.createElement("div");
+        el.className = "radarDot " + (t.threat >= 2 ? "t2" : t.threat >= 1 ? "t1" : "t0");
+        const frac = Math.max(0, Math.min(1, (t.dist || 0) / RADAR_MAXD));
+        el.style.top = (frac * 100) + "%";
+        wrap.appendChild(el);
+      }
+    }
+
+    // TODO (next): wind arrows re-projected onto MapLibre; units/zones come via the Karoo overlay.
+
+    map.on("load", () => {
+      map.addSource("trail", { type: "geojson", data: trailGeo() });
+      map.addLayer({ id: "trail", type: "line", source: "trail",
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: { "line-color": "#1a6abf", "line-width": 4, "line-opacity": 0.65 } });
+      if (!trailOn) map.setLayoutProperty("trail", "visibility", "none");
+      connect();
+    });
+
+    function connect() {
+      const ws = new WebSocket(RELAY_URL + "?role=overlay");
+      ws.onmessage = (e) => {
+        try {
+          const d = JSON.parse(e.data);
+          if (Array.isArray(d.radar)) { renderRadar(d.radar); return; }
+          if (Array.isArray(d.path)) { setTrail(d.path); return; }
+          if (d.offline) { goOffline(); return; }
+          if (d.hidden) { meEl.classList.add("stale"); armStale(); return; }
+          if (typeof d.lat === "number") place(d.lat, d.lng, d.hdg);
+        } catch {}
+      };
+      ws.onclose = () => setTimeout(connect, 2000);
+      ws.onerror = () => ws.close();
+    }
+  </script>
+</body>
+</html>
