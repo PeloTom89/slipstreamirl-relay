@@ -26,8 +26,9 @@ const CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
 // Overlay pages served straight from this service (one deploy / one URL).
 // Control is the native SlipstreamIRL app now; "/" just returns a status line.
 const PAGES = {
-  "/overlay": "overlay.html",
-  "/overlay-gl": "overlay-gl.html",   // MapLibre vector POC (upright labels on rotation)
+  "/overlay": "overlay-gl.html",      // MapLibre vector (upright labels on rotation)
+  "/overlay-gl": "overlay-gl.html",   // alias kept during the migration
+  "/overlay-raster": "overlay.html",  // old Leaflet raster overlay, kept as a fallback
   "/chat": "chat.html",
   "/karoo": "karoo.html",
 };
