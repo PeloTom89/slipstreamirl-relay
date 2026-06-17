@@ -104,15 +104,16 @@
 
     // Breadcrumb trail: a polyline of the route, fed by the live position stream (the
     // relay replays the whole route on connect). Decimated + capped to stay light.
-    const TRAIL_MIN_M = 10, TRAIL_MAX = 4000;
+    const TRAIL_MIN_M = 25, TRAIL_MAX = 8000; // ~200 km / ~125 mi of trail
     let trailPts = [], trailLine = null;
+    const trailRenderer = L.canvas({ padding: 0.5 }); // canvas handles a long polyline far better than SVG
     function trailDistM(a, b) {
       const R = 6371000, dLat = (b[0]-a[0])*Math.PI/180, dLng = (b[1]-a[1])*Math.PI/180,
         lat = (a[0]+b[0])/2*Math.PI/180, x = dLng*Math.cos(lat);
       return Math.sqrt(dLat*dLat + x*x) * R;
     }
     function ensureTrail() {
-      if (!trailLine) trailLine = L.polyline([], { color: "#1a6abf", weight: 4, opacity: 0.65, lineJoin: "round", lineCap: "round" });
+      if (!trailLine) trailLine = L.polyline([], { renderer: trailRenderer, color: "#1a6abf", weight: 4, opacity: 0.65, lineJoin: "round", lineCap: "round" });
       if (trailOn && !map.hasLayer(trailLine)) trailLine.addTo(map);
     }
     function addTrailPoint(lat, lng) {

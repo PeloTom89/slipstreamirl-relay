@@ -47,8 +47,8 @@ function broadcast(loc) {
 }
 
 // Approx distance in metres between two [lat,lng] points (for breadcrumb decimation).
-const TRAIL_MIN_M = 10;    // only record a breadcrumb point after moving this far
-const TRAIL_MAX = 4000;    // cap the cached path (~40 km at 10 m spacing)
+const TRAIL_MIN_M = 25;    // only record a breadcrumb point after moving this far
+const TRAIL_MAX = 8000;    // cap the cached path (~200 km / ~125 mi at 25 m spacing)
 function distM(a, b) {
   const R = 6371000, dLat = (b[0] - a[0]) * Math.PI / 180, dLng = (b[1] - a[1]) * Math.PI / 180;
   const lat = (a[0] + b[0]) / 2 * Math.PI / 180, x = dLng * Math.cos(lat);
