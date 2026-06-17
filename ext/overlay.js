@@ -250,7 +250,7 @@ function goOffline() {
 // Varia radar strip: a dot per vehicle by distance (you/near at the top, far behind
 // at the bottom), colored by threat. Empty list hides the strip.
 const RADAR_MAXD = 150;
-const RADAR_CLEAR_GRACE = 2500; // ms — ignore brief empty frames (a car passing) before hiding
+const RADAR_CLEAR_GRACE = 1000; // ms — ignore brief empty frames (a car passing) before hiding
 let radarLastSeen = 0;
 function renderRadar(targets) {
   const wrap = document.getElementById("radar");
