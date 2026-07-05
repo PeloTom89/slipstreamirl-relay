@@ -34,15 +34,13 @@ const WIND_EXAGGERATION = 8;
 // like a car GPS); the gear menu's "North Up" toggle locks north-up. Persisted.
 let northUp = false;
 try { northUp = localStorage.getItem("slipNorthUp") === "1"; } catch {}
-let bearingCont = 0;             // continuous (un-wrapped) degrees so transitions take the short way
-const maprotEl = document.getElementById("maprot");
+// MapLibre rotates natively (vector labels stay upright). Course-up = map bearing
+// equals the rider's heading; North Up = bearing 0. The bearing is applied as part
+// of each placement (place); the toggle re-orients immediately via applyBearing().
+function desiredBearing() { return northUp ? 0 : (lastHdg >= 0 ? lastHdg : 0); }
 function applyBearing() {
-  if (!maprotEl) return;
-  const desired = northUp ? 0 : -(lastHdg >= 0 ? lastHdg : 0);
-  let d = desired - (bearingCont % 360);
-  while (d > 180) d -= 360; while (d < -180) d += 360;
-  bearingCont += d;
-  maprotEl.style.setProperty("--bearing", bearingCont + "deg");
+  if (typeof map === "undefined" || !map) return;
+  map.easeTo({ bearing: desiredBearing(), duration: 500, easing: (t) => t });
 }
 // Breadcrumb trail on/off (per viewer, persisted). Default on.
 let trailOn = true;
@@ -121,16 +119,16 @@ function applyLayout() {
   cornerStyle(layoutCorner);
   applySize();
   markCornerSel();
-  if (map) map.invalidateSize();
+  if (typeof map !== "undefined" && map && map.resize) map.resize();
 }
-function setCorner(c) { layoutCorner = c; cornerStyle(c); markCornerSel(); saveLayout(); if (map) map.invalidateSize(); }
+function setCorner(c) { layoutCorner = c; cornerStyle(c); markCornerSel(); saveLayout(); if (typeof map !== "undefined" && map && map.resize) map.resize(); }
 function stepSize(delta) {
   const cur = deviceEl.getBoundingClientRect().height;
   const minH = window.innerHeight * 0.25, maxH = window.innerHeight * 0.95;
   layoutHeight = Math.max(minH, Math.min(maxH, cur + delta));
   applySize();
   saveLayout();
-  if (map) map.invalidateSize();
+  if (typeof map !== "undefined" && map && map.resize) map.resize();
 }
 
 const infoEl = document.getElementById("gearBtn"); // gear opens the settings menu
@@ -184,32 +182,46 @@ const zinBtn = document.getElementById("zinBtn");
 const zoutBtn = document.getElementById("zoutBtn");
 const recenterBtn = document.getElementById("recenterBtn");
 if (zinBtn) zinBtn.addEventListener("click", () => {
-  if (following) followZoom = Math.min(19, followZoom + 1); else map.setZoom(map.getZoom() + 1);
+  if (following) { followZoom = Math.min(19, followZoom + 1); map.easeTo({ zoom: followZoom, duration: 300 }); }
+  else map.zoomTo(map.getZoom() + 1, { duration: 300 });
 });
 if (zoutBtn) zoutBtn.addEventListener("click", () => {
-  if (following) followZoom = Math.max(1, followZoom - 1); else map.setZoom(map.getZoom() - 1);
+  if (following) { followZoom = Math.max(1, followZoom - 1); map.easeTo({ zoom: followZoom, duration: 300 }); }
+  else map.zoomTo(map.getZoom() - 1, { duration: 300 });
 });
 if (recenterBtn) recenterBtn.addEventListener("click", () => {
   following = true; followZoom = ZOOM;
-  if (markerLL) map.setView(markerLL, followZoom, { animate: true });
+  if (markerLL) map.easeTo({ center: [markerLL[1], markerLL[0]], zoom: followZoom, bearing: desiredBearing(), duration: 600 });
 });
 
-/* ---------- map ---------- */
-const map = L.map("map", { zoomControl: false, attributionControl: false, scrollWheelZoom: false }).setView([0, 0], ZOOM);
-// Twitch's CSP blocks loading tile <img>s from external hosts (img-src), but it
-// allows fetch() to the allowlisted relay (connect-src — same as the WebSocket).
-// So we fetch each tile and hand it to the map as a blob URL, sidestepping img-src.
-const ProxyTiles = L.TileLayer.extend({
-  createTile: function (coords, done) {
-    const img = document.createElement("img");
-    fetch(this.getTileUrl(coords))
-      .then(r => r.ok ? r.blob() : Promise.reject(r.status))
-      .then(b => { const u = URL.createObjectURL(b); img.onload = () => { URL.revokeObjectURL(u); done(null, img); }; img.src = u; })
-      .catch(err => done(err, img));
-    return img;
-  },
+/* ---------- map (MapLibre GL vector) ----------
+   Vector tiles render street/landmark labels as live text, so they stay UPRIGHT
+   when the map rotates course-up (the whole reason for the engine swap). MapLibre
+   spins its workers from same-origin files (the CSP build), so it runs inside the
+   Twitch extension iframe whose script-src is 'self' (no blob: needed). Vector
+   tiles + glyphs + sprite are fetched from tiles.openfreemap.org, which the
+   broadcaster must add to the extension's URL-fetch allowlist (connect-src). */
+maplibregl.setWorkerUrl("vendor/maplibre-gl-csp-worker.js");
+const map = new maplibregl.Map({
+  container: "map",
+  style: "https://tiles.openfreemap.org/styles/positron",
+  center: [0, 0], zoom: ZOOM, bearing: 0,
+  attributionControl: false, interactive: true, fadeDuration: 0,
+  dragRotate: false, pitchWithRotate: false, touchPitch: false,
+  touchZoomRotate: false, scrollZoom: false, keyboard: false, doubleClickZoom: false,
 });
-new ProxyTiles(`${DEFAULT_RELAY}/tiles/{z}/{x}/{y}.png`, { maxZoom: 19 }).addTo(map);
+let mapLoaded = false;
+map.on("load", () => {
+  mapLoaded = true;
+  map.addSource("trail", { type: "geojson", data: trailGeo() });
+  map.addLayer({
+    id: "trail", type: "line", source: "trail",
+    layout: { "line-join": "round", "line-cap": "round" },
+    paint: { "line-color": "#1a6abf", "line-width": 4, "line-opacity": 0.65 },
+  });
+  if (!trailOn) map.setLayoutProperty("trail", "visibility", "none");
+  if (trailPts.length) trailSync();  // flush any points received before load
+});
 
 // Viewer map controls: follow mode keeps the map centred on the rider; dragging
 // the map turns it off; Recenter turns it back on. Zoom is driven by followZoom
@@ -218,50 +230,46 @@ let following = true, followZoom = ZOOM;
 map.on("dragstart", () => { following = false; });
 
 let stale = false, lastHdg = 0, gotFix = false, staleTimer = null;
-let marker = null, markerLL = null;
-let animFrom = null, animTo = null, animStart = 0, animDur = 3000, lastFixMs = 0;
+let marker = null, markerLL = null, onMap = false; // markerLL = [lat,lng]
+let lastFixMs = 0;
 const STALE_MS = 30000;
 
-// Breadcrumb trail: a polyline of the route. Points come from the live position stream;
-// the relay also replays the whole route on connect. Decimated + capped to stay light.
+// Breadcrumb trail: a GeoJSON line layer of the route. Points come from the live
+// position stream; the relay also replays the whole route on connect. Decimated +
+// capped to stay light. trailPts are stored as [lng,lat] (MapLibre order).
 const TRAIL_MIN_M = 25, TRAIL_MAX = 8000; // ~200 km / ~125 mi of trail
-let trailPts = [], trailLine = null;
-const trailRenderer = L.canvas({ padding: 0.5 }); // canvas handles a long polyline far better than SVG
-function trailDistM(a, b) {
+let trailPts = []; // [lng,lat]
+function trailGeo() { return { type: "Feature", geometry: { type: "LineString", coordinates: trailPts } }; }
+function trailDistM(a, b) { // a,b = [lat,lng]
   const R = 6371000, dLat = (b[0]-a[0])*Math.PI/180, dLng = (b[1]-a[1])*Math.PI/180,
     lat = (a[0]+b[0])/2*Math.PI/180, x = dLng*Math.cos(lat);
   return Math.sqrt(dLat*dLat + x*x) * R;
 }
-function ensureTrail() {
-  if (!trailLine) trailLine = L.polyline([], { renderer: trailRenderer, color: "#1a6abf", weight: 4, opacity: 0.65, lineJoin: "round", lineCap: "round" });
-  if (trailOn && !map.hasLayer(trailLine)) trailLine.addTo(map);
-}
+function trailSync() { const s = mapLoaded && map.getSource("trail"); if (s) s.setData(trailGeo()); }
 function addTrailPoint(lat, lng) {
-  ensureTrail();
-  const pt = [lat, lng];
-  if (trailPts.length && trailDistM(trailPts[trailPts.length-1], pt) < TRAIL_MIN_M) return;
-  trailPts.push(pt);
+  if (trailPts.length) { const last = trailPts[trailPts.length-1]; if (trailDistM([last[1], last[0]], [lat, lng]) < TRAIL_MIN_M) return; }
+  trailPts.push([lng, lat]);
   if (trailPts.length > TRAIL_MAX) trailPts.shift();
-  trailLine.setLatLngs(trailPts);
+  trailSync();
 }
-function setTrail(pts) {            // relay replay of the whole route on connect
-  ensureTrail();
-  trailPts = Array.isArray(pts) ? pts.slice(-TRAIL_MAX) : [];
-  trailLine.setLatLngs(trailPts);
+function setTrail(pts) {            // relay replay of the whole route on connect ([lat,lng] pairs)
+  trailPts = Array.isArray(pts) ? pts.slice(-TRAIL_MAX).map((p) => [p[1], p[0]]) : [];
+  trailSync();
 }
 function applyTrailVis() {
-  ensureTrail();
-  if (trailOn) { if (!map.hasLayer(trailLine)) trailLine.addTo(map); }
-  else if (map.hasLayer(trailLine)) map.removeLayer(trailLine);
+  if (!mapLoaded || !map.getLayer("trail")) return;
+  map.setLayoutProperty("trail", "visibility", trailOn ? "visible" : "none");
 }
 
 function armStale() {
   if (staleTimer) clearTimeout(staleTimer);
   staleTimer = setTimeout(() => setStale(true), STALE_MS);
 }
-function cyclistSVG(hdg) {
-  const rot = (typeof hdg === "number" && hdg >= 0) ? hdg : 0;
-  return `<svg width="26" height="40" viewBox="-22 -33 44 66" style="transform:rotate(${rot}deg);filter:drop-shadow(0 3px 7px rgba(0,0,0,.75))">
+// The cyclist is drawn pointing UP; the MapLibre marker's setRotation turns it in
+// map space (rotationAlignment:"map"), so it points along travel in north-up and
+// straight up in course-up — no inner CSS rotation needed.
+function cyclistSVG() {
+  return `<svg width="26" height="40" viewBox="-22 -33 44 66" style="filter:drop-shadow(0 3px 7px rgba(0,0,0,.75))">
     <ellipse cx="0" cy="-27" rx="4.5" ry="11" fill="#111"/><ellipse cx="0" cy="27" rx="4.5" ry="11" fill="#111"/>
     <rect x="-1.5" y="-15" width="3" height="42" rx="1.5" fill="#555"/>
     <ellipse cx="0" cy="8" rx="9" ry="13" fill="#1a6abf"/><ellipse cx="0" cy="-4" rx="11" ry="5.5" fill="#1a6abf"/>
@@ -270,26 +278,26 @@ function cyclistSVG(hdg) {
     <line x1="-15" y1="-20" x2="15" y2="-20" stroke="#2a2a2a" stroke-width="3" stroke-linecap="round"/>
     <ellipse cx="0" cy="-14" rx="8.5" ry="9.5" fill="#ffffff"/></svg>`;
 }
-function iconHtml() {
-  const inner = stale ? '<div class="qmark">' + cyclistSVG(0) + '</div>' : cyclistSVG(lastHdg);
-  return `<div class="me-wrap${stale ? " stale" : ""}"><div class="me-halo"><div class="pulse-ring"></div></div><div class="me-icon">${inner}</div></div>`;
+const meEl = document.createElement("div");
+meEl.className = "me-wrap";
+function buildMe() {
+  const inner = stale ? '<div class="qmark">' + cyclistSVG() + '</div>' : cyclistSVG();
+  meEl.innerHTML = '<div class="me-halo"><div class="pulse-ring"></div></div><div class="me-icon">' + inner + '</div>';
 }
-function makeDivIcon() { return L.divIcon({ className: "me-marker", html: iconHtml(), iconSize: [0, 0], iconAnchor: [0, 0] }); }
-function render() { if (marker) marker.setIcon(makeDivIcon()); }
-function updateHeading() {
-  if (!marker || stale) return;
-  const el = marker.getElement();
-  const svg = el && el.querySelector(".me-icon svg");
-  if (svg) svg.style.transform = `rotate(${lastHdg >= 0 ? lastHdg : 0}deg)`;
-}
+buildMe();
+marker = new maplibregl.Marker({ element: meEl, rotationAlignment: "map", anchor: "center" });
+function applyRotation() { marker.setRotation(stale ? 0 : (lastHdg >= 0 ? lastHdg : 0)); }
+function render() { meEl.classList.toggle("stale", stale); buildMe(); applyRotation(); }
+function updateHeading() { if (!stale) applyRotation(); }
 function setStale(s) { if (s === stale) return; stale = s; render(); }
 function goOffline() {
   if (staleTimer) clearTimeout(staleTimer);
-  staleTimer = null; stale = false; gotFix = false; animFrom = animTo = null;
-  if (marker) { map.removeLayer(marker); marker = null; markerLL = null; }
+  staleTimer = null; stale = false; gotFix = false;
+  if (onMap) { marker.remove(); onMap = false; }
+  markerLL = null;
   startTs = null; if (elElapsed) elElapsed.textContent = "0:00:00"; // stream ended — reset ride timer
   renderRadar([]); // clear the radar strip
-  trailPts = []; if (trailLine) trailLine.setLatLngs([]); // clear the breadcrumb trail
+  trailPts = []; trailSync(); // clear the breadcrumb trail
 }
 
 // Varia radar strip: a dot per vehicle by distance (you/near at the top, far behind
@@ -321,33 +329,23 @@ function renderRadar(targets) {
 }
 function place(lat, lng, hdg) {
   lastHdg = hdg;
-  applyBearing();   // keep the map's course-up rotation in sync with heading
   addTrailPoint(lat, lng);
-  const target = [lat, lng];
-  const now = performance.now();
-  if (!gotFix) {
-    markerLL = target; animFrom = animTo = target;
-    map.setView(target, ZOOM);
-    marker = L.marker(target, { icon: makeDivIcon(), interactive: false, keyboard: false }).addTo(map);
-  } else {
-    animFrom = markerLL || target; animTo = target; animStart = now;
-    animDur = Math.min(Math.max(now - lastFixMs, 800), 6000);
-    updateHeading();
-  }
-  lastFixMs = now; gotFix = true; stale = false; armStale();
-}
-function animateRider() {
-  requestAnimationFrame(animateRider);
-  if (!animTo || !marker) return;
-  let t = animDur > 0 ? (performance.now() - animStart) / animDur : 1;
-  if (t > 1) t = 1;
-  const lat = animFrom[0] + (animTo[0] - animFrom[0]) * t;
-  const lng = animFrom[1] + (animTo[1] - animFrom[1]) * t;
   markerLL = [lat, lng];
-  marker.setLatLng(markerLL);
-  if (following) map.setView(markerLL, followZoom, { animate: false });
+  const ll = [lng, lat];          // MapLibre uses [lng,lat]
+  marker.setLngLat(ll);
+  applyRotation();
+  if (!onMap) { marker.addTo(map); onMap = true; }
+  // Course-up: bearing follows heading (North Up locks 0). The marker is a real
+  // geo marker, so MapLibre keeps it in place whether we follow or the viewer pans.
+  const bearing = desiredBearing();
+  if (!gotFix) {
+    gotFix = true;
+    map.jumpTo({ center: ll, bearing, zoom: followZoom });
+  } else if (following) {
+    map.easeTo({ center: ll, bearing, zoom: followZoom, duration: 1000, easing: (t) => t });
+  }
+  lastFixMs = performance.now(); stale = false; armStale();
 }
-animateRider();
 
 /* ---------- wind ---------- */
 const canvas = document.getElementById("wind-canvas");
@@ -368,13 +366,17 @@ if (window.ResizeObserver) { new ResizeObserver(() => resizeCanvas()).observe(ca
 function animateWind() {
   requestAnimationFrame(animateWind);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  if (!windOn() || !wind || !gotFix) return;
+  if (!windOn() || !wind || windDir == null || !gotFix) return;
   const travel = Math.sqrt(canvas.width ** 2 + canvas.height ** 2) * 0.65;
   const numArrows = 3;
   if (arrowOffsets === null) arrowOffsets = Array.from({ length: numArrows }, (_, i) => -travel + i * (2 * travel / numArrows));
+  // Rider's screen position (centred while following; wherever it is when panned).
   let cx = canvas.width / 2, cy = canvas.height / 2;
-  if (markerLL) { const p = map.latLngToContainerPoint(markerLL); cx = p.x; cy = p.y; }
-  const angle = Math.atan2(wind.vy, wind.vx);
+  if (markerLL && map.project) { const p = map.project([markerLL[1], markerLL[0]]); cx = p.x; cy = p.y; }
+  // The wind canvas is screen-fixed (it does NOT rotate with the map), so subtract
+  // the map bearing to keep the arrows pointing in the wind's true compass direction.
+  const phi = (((windDir + 180) - map.getBearing()) * Math.PI) / 180; // blowing-TO, minus bearing
+  const vx = Math.sin(phi), vy = -Math.cos(phi), angle = Math.atan2(vy, vx);
   const s = 22 * drawScale, fadeZone = travel * 0.25;
   // Real px/frame from the map's metres-per-pixel at this zoom + rider latitude.
   const lat = markerLL ? markerLL[0] : 0;
@@ -386,7 +388,7 @@ function animateWind() {
     const t = (arrowOffsets[i] + fadeZone) / (2 * fadeZone);
     const alpha = (t >= 0 && t <= 1) ? Math.sin(Math.PI * t) * 0.95 : 0;
     if (alpha <= 0) continue;
-    const x = cx + wind.vx * arrowOffsets[i], y = cy + wind.vy * arrowOffsets[i];
+    const x = cx + vx * arrowOffsets[i], y = cy + vy * arrowOffsets[i];
     ctx.save(); ctx.translate(x, y); ctx.rotate(angle); ctx.globalAlpha = alpha;
     ctx.fillStyle = "#5b9cf6"; ctx.shadowColor = "rgba(30,80,200,0.5)"; ctx.shadowBlur = 8;
     ctx.beginPath(); ctx.moveTo(s, 0); ctx.lineTo(-s * 0.5, -s * 0.55); ctx.lineTo(-s * 0.2, 0); ctx.lineTo(-s * 0.5, s * 0.55); ctx.closePath(); ctx.fill();
@@ -484,9 +486,9 @@ function connect() {
   deviceEl.classList.add("on");
   applyHidden();
   applyLayout();
-  // The map was created while the device was hidden, so Leaflet had no size and
-  // tiled only part of it (gray strip). Recompute now that it's visible.
-  if (map) { map.invalidateSize(); setTimeout(() => map.invalidateSize(), 80); }
+  // The map was created while the device was hidden, so it had no size and rendered
+  // only part of itself. Recompute now that it's visible.
+  if (map && map.resize) { try { map.resize(); } catch {} setTimeout(() => { try { map.resize(); } catch {} }, 80); }
   if (ws) { try { ws.close(); } catch {} ws = null; }
   const url = relayBase.replace(/^http/, "ws") + "?role=overlay";
   ws = new WebSocket(url);

@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>SlipstreamIRL overlay</title>
-<link rel="stylesheet" href="vendor/leaflet.css" />
+<link rel="stylesheet" href="vendor/maplibre-gl.css" />
 <style>
   html,body{height:100%;margin:0;background:transparent;overflow:hidden;
     font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
@@ -69,18 +69,19 @@
   .card .val .unit{font-size:0.4em;font-weight:700;color:#8b919a;margin-left:0.3em}
   .card .val span[id]{transition:color .25s ease}
   #mapwrap{flex:1;position:relative;background:#e9e7e2;pointer-events:auto;overflow:hidden}
-  /* Course-up rotation layer: oversized + clipped so spinning never shows blank corners. */
-  #maprot{position:absolute;left:50%;top:50%;width:160%;height:160%;
-    transform:translate(-50%,-50%) rotate(var(--bearing,0deg));transform-origin:center center;
-    transition:transform .5s ease-out;will-change:transform}
-  #map{position:absolute;inset:0;width:100%;height:100%;background:transparent}
+  /* MapLibre rotates natively (vector labels stay upright), so this is just a static
+     full-size container for the map + wind canvas. */
+  #maprot{position:absolute;inset:0}
+  #map{position:absolute;inset:0;width:100%;height:100%;background:#e9e7e2}
   /* Always-visible map controls (zoom + recenter). */
   #mapctrls{position:absolute;right:0.4em;bottom:0.4em;z-index:550;display:flex;flex-direction:column;gap:0.25em;pointer-events:auto}
   .mapbtn{width:1.8em;height:1.8em;border:0;border-radius:0.4em;background:rgba(10,11,13,.82);
     color:#fff;font-size:1.1em;font-weight:800;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;
     box-shadow:0 1px 3px rgba(0,0,0,.5)}
   .mapbtn svg{width:1.1em;height:1.1em;stroke:currentColor}
-  .leaflet-container{background:#e9e7e2}
+  .maplibregl-map{background:#e9e7e2}
+  .maplibregl-canvas{outline:none}
+  .maplibregl-ctrl-attrib,.maplibregl-ctrl-bottom-right,.maplibregl-ctrl-bottom-left,.maplibregl-ctrl-top-right,.maplibregl-ctrl-top-left{display:none !important}
   /* Varia rear-radar strip: left edge of the map (below the gear), dots by distance. */
   #radar{position:absolute;left:0.4em;top:2.8em;bottom:0.4em;width:1.8em;z-index:560;display:none;pointer-events:none}
   #radar .track{position:absolute;left:50%;transform:translateX(-50%);top:0;bottom:0;width:0.22em;background:rgba(255,255,255,.2);border-radius:0.11em}
@@ -91,10 +92,10 @@
   .radarDot.t2{background:#ff4d4d;animation:radarPulse .9s ease-in-out infinite}
   @keyframes radarPulse{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.25)}}
   #wind-canvas{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:500}
-  .me-wrap{position:absolute;left:0;top:0;pointer-events:none}
+  .me-wrap{position:absolute;left:0;top:0;width:0;height:0;pointer-events:none}
   .me-halo,.me-icon{position:absolute;left:0;top:0;transform:translate(-50%,-50%)}
   .me-wrap.stale .me-halo{display:none}
-  .leaflet-marker-icon.me-marker{background:none;border:none}
+  .maplibregl-marker{will-change:transform}
   .pulse-ring{width:40px;height:40px;border-radius:50%;border:3px solid #1a6abf;box-sizing:border-box;animation:pulse-ring 2.6s ease-out infinite}
   @keyframes pulse-ring{0%{transform:scale(0.6);opacity:0.9}100%{transform:scale(2.2);opacity:0}}
   .qmark{width:34px;height:34px;border-radius:50%;background:rgba(15,23,38,.88);border:2px solid #4d96ff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.55);animation:qpulse 1.4s ease-in-out infinite}
@@ -202,7 +203,7 @@
   <button id="showPill">▸ Show SlipstreamIRL</button>
 
   <script src="https://extension-files.twitch.tv/helper/v1/twitch-ext.min.js"></script>
-  <script src="vendor/leaflet.js"></script>
+  <script src="vendor/maplibre-gl-csp.js"></script>
   <script src="overlay.js"></script>
 </body>
 </html>
