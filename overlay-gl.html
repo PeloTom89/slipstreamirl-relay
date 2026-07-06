@@ -72,7 +72,7 @@
     // geographic space, so in course-up it lands pointing up; in north-up it points along travel.
     const marker = new maplibregl.Marker({ element: meEl, rotationAlignment: "map", anchor: "center" });
 
-    let lastHdg = 0, gotFix = false, onMap = false;
+    let lastHdg = 0, gotFix = false, onMap = false, lastFixMs = 0;
     let staleTimer = null;
     const STALE_MS = 30000;
     function armStale() { clearTimeout(staleTimer); staleTimer = setTimeout(() => meEl.classList.add("stale"), STALE_MS); }
@@ -109,8 +109,14 @@
         if (!onMap) { marker.addTo(map); onMap = true; }
       } else {
         marker.setRotation(hdg >= 0 ? hdg : 0);
-        map.easeTo({ center: ll, bearing, duration: 1000, easing: (t) => t });
+        // Ease over ~the real gap between fixes (a touch longer, so the glide is still
+        // in flight when the next fix lands -> continuous motion, no stop-go stalls).
+        const t = performance.now();
+        const dt = lastFixMs ? t - lastFixMs : 1000;
+        const dur = Math.max(600, Math.min(3000, dt * 1.2));
+        map.easeTo({ center: ll, bearing, duration: dur, easing: (t) => t });
       }
+      lastFixMs = performance.now();
       pushTrail(lat, lng);
       const now = Date.now();
       if (now - lastWindFetch > 10 * 60 * 1000) { lastWindFetch = now; fetchWind(lat, lng); }

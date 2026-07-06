@@ -228,6 +228,10 @@ map.on("load", () => {
 // while following, or the map's own zoom when freely panned.
 let following = true, followZoom = ZOOM;
 map.on("dragstart", () => { following = false; });
+// While following, glue the rider to the eased map centre so it moves smoothly with the
+// map instead of snapping to each raw fix. When the viewer pans (following=false) this
+// no-ops and place() keeps the marker at its true geographic position.
+map.on("move", () => { if (following && gotFix && marker) marker.setLngLat(map.getCenter()); });
 
 let stale = false, lastHdg = 0, gotFix = false, staleTimer = null;
 let marker = null, markerLL = null, onMap = false; // markerLL = [lat,lng]
@@ -342,7 +346,11 @@ function place(lat, lng, hdg) {
     gotFix = true;
     map.jumpTo({ center: ll, bearing, zoom: followZoom });
   } else if (following) {
-    map.easeTo({ center: ll, bearing, zoom: followZoom, duration: 1000, easing: (t) => t });
+    // Ease over ~the real gap between fixes (a touch longer, so the glide is still in
+    // flight when the next fix lands -> continuous motion, no stop-go stalls).
+    const dt = lastFixMs ? performance.now() - lastFixMs : 1000;
+    const dur = Math.max(600, Math.min(3000, dt * 1.2));
+    map.easeTo({ center: ll, bearing, zoom: followZoom, duration: dur, easing: (t) => t });
   }
   lastFixMs = performance.now(); stale = false; armStale();
 }
