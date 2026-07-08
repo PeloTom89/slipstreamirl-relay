@@ -1,0 +1,123 @@
+name: Post YouTube video to Strava
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'  # every 30 minutes
+  workflow_dispatch:         # manual trigger for testing
+
+jobs:
+  post-comment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post latest YouTube video to latest Strava activity
+        env:
+          YOUTUBE_API_KEY:      ${{ secrets.YOUTUBE_API_KEY }}
+          YOUTUBE_CHANNEL_ID:   ${{ secrets.YOUTUBE_CHANNEL_ID }}
+          STRAVA_CLIENT_ID:     ${{ secrets.STRAVA_CLIENT_ID }}
+          STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
+          STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
+        run: |
+          node --input-type=module <<'EOF'
+          const YT_KEY     = process.env.YOUTUBE_API_KEY;
+          const YT_CHANNEL = process.env.YOUTUBE_CHANNEL_ID;
+          const S_ID       = process.env.STRAVA_CLIENT_ID;
+          const S_SECRET   = process.env.STRAVA_CLIENT_SECRET;
+          const S_REFRESH  = process.env.STRAVA_REFRESH_TOKEN;
+
+          if (!YT_KEY || !YT_CHANNEL || !S_ID || !S_SECRET || !S_REFRESH) {
+            console.log('Missing required secrets — skipping.');
+            process.exit(0);
+          }
+
+          // 1. Refresh Strava access token
+          const tokenRes = await fetch('https://www.strava.com/oauth/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              client_id: S_ID,
+              client_secret: S_SECRET,
+              refresh_token: S_REFRESH,
+              grant_type: 'refresh_token',
+            }),
+          });
+          const tokenData = await tokenRes.json();
+          if (!tokenData.access_token) {
+            console.error('Strava token refresh failed:', JSON.stringify(tokenData));
+            process.exit(1);
+          }
+          const access_token = tokenData.access_token;
+
+          // 2. Fetch latest YouTube video uploaded in the last 24 hours
+          const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+          const ytRes = await fetch(
+            `https://www.googleapis.com/youtube/v3/search?part=snippet` +
+            `&channelId=${encodeURIComponent(YT_CHANNEL)}` +
+            `&type=video&order=date&maxResults=1` +
+            `&publishedAfter=${encodeURIComponent(since)}` +
+            `&key=${encodeURIComponent(YT_KEY)}`
+          );
+          const ytData = await ytRes.json();
+          if (ytData.error) {
+            console.error('YouTube API error:', JSON.stringify(ytData.error));
+            process.exit(1);
+          }
+          const video = (ytData.items || [])[0];
+          if (!video) {
+            console.log('No YouTube video uploaded in the last 24 hours — skipping.');
+            process.exit(0);
+          }
+          const videoUrl = `https://www.youtube.com/watch?v=${video.id.videoId}`;
+          const videoPublished = new Date(video.snippet.publishedAt).getTime();
+
+          // 3. Fetch latest Strava activity
+          const actRes = await fetch(
+            'https://www.strava.com/api/v3/athlete/activities?per_page=1',
+            { headers: { Authorization: `Bearer ${access_token}` } }
+          );
+          const activities = await actRes.json();
+          const activity = (activities || [])[0];
+          if (!activity) {
+            console.log('No Strava activity found — skipping.');
+            process.exit(0);
+          }
+          const actStart = new Date(activity.start_date).getTime();
+
+          // 4. Video must have been published after the activity started
+          if (videoPublished < actStart) {
+            console.log(
+              `YouTube video (${new Date(videoPublished).toISOString()}) predates ` +
+              `activity start (${activity.start_date}) — skipping.`
+            );
+            process.exit(0);
+          }
+
+          // 5. Skip if a YouTube comment is already posted on this activity
+          const comRes = await fetch(
+            `https://www.strava.com/api/v3/activities/${activity.id}/comments?per_page=10`,
+            { headers: { Authorization: `Bearer ${access_token}` } }
+          );
+          const comments = await comRes.json();
+          if ((comments || []).some(c => c.text && c.text.includes('youtube.com'))) {
+            console.log('YouTube link already commented on this activity — skipping.');
+            process.exit(0);
+          }
+
+          // 6. Post the YouTube link as a Strava comment
+          const postRes = await fetch(
+            `https://www.strava.com/api/v3/activities/${activity.id}/comments`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${access_token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ text: `Ride video: ${videoUrl}` }),
+            }
+          );
+          if (!postRes.ok) {
+            const body = await postRes.text();
+            console.error(`Strava comment POST failed (${postRes.status}):`, body);
+            process.exit(1);
+          }
+          console.log(`Posted ${videoUrl} to Strava activity ${activity.id} (${activity.name})`);
+          EOF
