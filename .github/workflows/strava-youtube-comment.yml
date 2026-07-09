@@ -19,7 +19,7 @@ jobs:
         run: |
           if [ -f data/ride-summary.json ]; then
             echo "found=true" >> "$GITHUB_OUTPUT"
-            { echo "summary<<RIDESUMMARY_EOF_9f3ac2"; cat data/ride-summary.json; echo "RIDESUMMARY_EOF_9f3ac2"; } >> "$GITHUB_OUTPUT"
+            { echo "summary<<RIDESUMMARY_EOF_9f3ac2"; cat data/ride-summary.json; echo; echo "RIDESUMMARY_EOF_9f3ac2"; } >> "$GITHUB_OUTPUT"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi

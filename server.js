@@ -377,10 +377,13 @@ const server = http.createServer((req, res) => {
         if (getRes.status === 200) sha = (await getRes.json()).sha;
         else if (getRes.status !== 404) throw new Error("github get failed " + getRes.status);
 
+        // Trailing newline matters: the consuming workflow reads this file into a
+        // GITHUB_OUTPUT heredoc block, and a file with no trailing newline glues its
+        // closing delimiter onto the JSON's last line, breaking the step.
         const contentB64 = Buffer.from(JSON.stringify({
           summary: summary.trim(),
           recordedAt: recordedAt || new Date().toISOString(),
-        }, null, 2)).toString("base64");
+        }, null, 2) + "\n").toString("base64");
         const putRes = await fetch(contentsUrl, {
           method: "PUT",
           headers: ghHeaders,
