@@ -9,7 +9,7 @@ jobs:
   post-comment:
     runs-on: ubuntu-latest
     steps:
-      - name: Post latest YouTube video to latest Strava activity
+      - name: Add latest YouTube video link to latest Strava activity
         env:
           YOUTUBE_API_KEY:      ${{ secrets.YOUTUBE_API_KEY }}
           YOUTUBE_CHANNEL_ID:   ${{ secrets.YOUTUBE_CHANNEL_ID }}
@@ -95,37 +95,44 @@ jobs:
             process.exit(0);
           }
 
-          // 5. Skip if a YouTube comment is already posted on this activity
-          const comRes = await fetch(
-            `https://www.strava.com/api/v3/activities/${activity.id}/comments?per_page=10`,
+          // 5. Fetch the full activity to read its current description
+          //    (the list endpoint returns summaries without descriptions)
+          const detRes = await fetch(
+            `https://www.strava.com/api/v3/activities/${activity.id}`,
             { headers: { Authorization: `Bearer ${access_token}` } }
           );
-          if (!comRes.ok) {
-            console.error(`Strava comments fetch failed (${comRes.status}):`, await comRes.text());
+          if (!detRes.ok) {
+            console.error(`Strava activity fetch failed (${detRes.status}):`, await detRes.text());
             process.exit(1);
           }
-          const comments = await comRes.json();
-          if ((comments || []).some(c => c.text && c.text.includes('youtube.com'))) {
-            console.log('YouTube link already commented on this activity — skipping.');
+          const detail = await detRes.json();
+          const description = detail.description || '';
+          if (description.includes('youtube.com')) {
+            console.log('YouTube link already in activity description — skipping.');
             process.exit(0);
           }
 
-          // 6. Post the YouTube link as a Strava comment
-          const postRes = await fetch(
-            `https://www.strava.com/api/v3/activities/${activity.id}/comments`,
+          // 6. Append the YouTube link to the activity description
+          //    (Strava's API no longer allows posting comments, so we update
+          //    the description instead — fully supported with activity:write)
+          const newDescription = description
+            ? `${description}\n\n🎥 Ride video: ${videoUrl}`
+            : `🎥 Ride video: ${videoUrl}`;
+          const updRes = await fetch(
+            `https://www.strava.com/api/v3/activities/${activity.id}`,
             {
-              method: 'POST',
+              method: 'PUT',
               headers: {
                 Authorization: `Bearer ${access_token}`,
-                'Content-Type': 'application/json',
+                'Content-Type': 'application/x-www-form-urlencoded',
               },
-              body: JSON.stringify({ text: `Ride video: ${videoUrl}` }),
+              body: new URLSearchParams({ description: newDescription }).toString(),
             }
           );
-          if (!postRes.ok) {
-            const body = await postRes.text();
-            console.error(`Strava comment POST failed (${postRes.status}):`, body);
+          if (!updRes.ok) {
+            const body = await updRes.text();
+            console.error(`Strava activity update failed (${updRes.status}):`, body);
             process.exit(1);
           }
-          console.log(`Posted ${videoUrl} to Strava activity ${activity.id} (${activity.name})`);
+          console.log(`Added ${videoUrl} to description of Strava activity ${activity.id} (${activity.name})`);
           EOF
