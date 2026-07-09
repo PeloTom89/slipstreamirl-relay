@@ -5,26 +5,54 @@ on:
     - cron: '*/30 * * * *'  # every 30 minutes
   workflow_dispatch:         # manual trigger for testing
 
+permissions:
+  contents: write
+
 jobs:
   post-comment:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Read ride summary (if present)
+        id: ride_summary
+        run: |
+          if [ -f data/ride-summary.json ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            { echo "summary<<RIDESUMMARY_EOF_9f3ac2"; cat data/ride-summary.json; echo "RIDESUMMARY_EOF_9f3ac2"; } >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Add latest YouTube video link to latest Strava activity
+        id: sync
         env:
-          YOUTUBE_API_KEY:      ${{ secrets.YOUTUBE_API_KEY }}
-          YOUTUBE_CHANNEL_ID:   ${{ secrets.YOUTUBE_CHANNEL_ID }}
-          STRAVA_CLIENT_ID:     ${{ secrets.STRAVA_CLIENT_ID }}
-          STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
-          STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
-          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
+          YOUTUBE_API_KEY:            ${{ secrets.YOUTUBE_API_KEY }}
+          YOUTUBE_CHANNEL_ID:         ${{ secrets.YOUTUBE_CHANNEL_ID }}
+          STRAVA_CLIENT_ID:           ${{ secrets.STRAVA_CLIENT_ID }}
+          STRAVA_CLIENT_SECRET:       ${{ secrets.STRAVA_CLIENT_SECRET }}
+          STRAVA_REFRESH_TOKEN:       ${{ secrets.STRAVA_REFRESH_TOKEN }}
+          ANTHROPIC_API_KEY:          ${{ secrets.ANTHROPIC_API_KEY }}
+          RIDE_SUMMARY_JSON:          ${{ steps.ride_summary.outputs.summary }}
+          YOUTUBE_OAUTH_CLIENT_ID:     ${{ secrets.YOUTUBE_OAUTH_CLIENT_ID }}
+          YOUTUBE_OAUTH_CLIENT_SECRET: ${{ secrets.YOUTUBE_OAUTH_CLIENT_SECRET }}
+          YOUTUBE_OAUTH_REFRESH_TOKEN: ${{ secrets.YOUTUBE_OAUTH_REFRESH_TOKEN }}
         run: |
           node --input-type=module <<'EOF'
+          import fs from 'node:fs';
+
           const YT_KEY     = process.env.YOUTUBE_API_KEY;
           const YT_CHANNEL = process.env.YOUTUBE_CHANNEL_ID;
           const S_ID       = process.env.STRAVA_CLIENT_ID;
           const S_SECRET   = process.env.STRAVA_CLIENT_SECRET;
           const S_REFRESH  = process.env.STRAVA_REFRESH_TOKEN;
           const CLAUDE_KEY = process.env.ANTHROPIC_API_KEY;
+
+          function emitOutput(key, value) {
+            if (process.env.GITHUB_OUTPUT) {
+              fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
+            }
+          }
 
           if (!YT_KEY || !YT_CHANNEL || !S_ID || !S_SECRET || !S_REFRESH) {
             console.log('Missing required secrets — skipping.');
@@ -68,7 +96,8 @@ jobs:
             console.log('No YouTube video uploaded in the last 24 hours — skipping.');
             process.exit(0);
           }
-          const videoUrl = `https://www.youtube.com/watch?v=${video.id.videoId}`;
+          const videoId = video.id.videoId;
+          const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
           const videoPublished = new Date(video.snippet.publishedAt).getTime();
           const decodeEntities = (s) => s
             .replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
@@ -91,6 +120,7 @@ jobs:
             process.exit(0);
           }
           const actStart = new Date(activity.start_date).getTime();
+          const stravaActivityUrl = `https://www.strava.com/activities/${activity.id}`;
 
           // 4. Video must have been published after the activity started
           if (videoPublished < actStart) {
@@ -122,6 +152,16 @@ jobs:
           const timeStr = `${Math.floor(totalMin / 60)}:${String(totalMin % 60).padStart(2, '0')}`;
           const ft = Math.round((detail.total_elevation_gain || 0) * 3.28084).toLocaleString('en-US');
 
+          // 5b. Rider's own dictated ride summary, if one was recorded after !stop.
+          //     Purely additive context for Claude — every tone rule below still applies.
+          let riderNotes = null;
+          try {
+            const parsed = JSON.parse(process.env.RIDE_SUMMARY_JSON || 'null');
+            if (parsed && typeof parsed.summary === 'string' && parsed.summary.trim()) {
+              riderNotes = parsed.summary.trim();
+            }
+          } catch {}
+
           // 6. Generate an understated title + plain, factual opener with Claude.
           //    Falls back to the existing title and the video title as the
           //    opener if the key is missing or the call fails.
@@ -132,7 +172,7 @@ jobs:
               const segments = [...new Set(
                 (detail.segment_efforts || []).map(e => e.segment_name || (e.segment && e.segment.name)).filter(Boolean)
               )].slice(0, 12);
-              const prompt = [
+              const promptLines = [
                 'Write a title and an opening line for a Strava cycling activity.',
                 '',
                 'Style rules (apply to both):',
@@ -155,7 +195,15 @@ jobs:
                 `- Distance: ${mi} mi · Moving time: ${timeStr} · Elevation gain: ${ft} ft`,
                 `- Video title: ${videoTitle}`,
                 `- Segments ridden: ${segments.join('; ') || 'n/a'}`,
-              ].join('\n');
+              ];
+              if (riderNotes) {
+                promptLines.push(
+                  '',
+                  'The rider recorded these notes right after finishing (their own words, voice-to-text, may be informal or fragmented). Weave in specific, true details from these notes where natural, but keep following every style rule above (plain/factual, no metaphor, no personification, no repetition):',
+                  `"""${riderNotes}"""`
+                );
+              }
+              const prompt = promptLines.join('\n');
 
               const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
                 method: 'POST',
@@ -195,7 +243,7 @@ jobs:
                 if (parsed.opener && parsed.opener.length <= 400) {
                   hook = parsed.opener.trim();
                 }
-                console.log('Using Claude-generated title and opener.');
+                console.log('Using Claude-generated title and opener' + (riderNotes ? ' (with rider notes).' : '.'));
               } else {
                 console.log('Claude API error — falling back to existing title / video title:', JSON.stringify(claudeData.error || claudeData.stop_reason));
               }
@@ -205,9 +253,10 @@ jobs:
           }
 
           // 7. Compose the description: opener, one stat line, camera line + link
+          const statLine = `${mi} mi · ${timeStr} · ${ft} ft`;
           const parts = [];
           if (hook) parts.push(hook);
-          parts.push(`${mi} mi · ${timeStr} · ${ft} ft`);
+          parts.push(statLine);
           parts.push(`Brought the camera along for this one 🎥\n${videoUrl}`);
           const block = parts.join('\n\n');
           const newDescription = description ? `${description}\n\n${block}` : block;
@@ -234,4 +283,89 @@ jobs:
             process.exit(1);
           }
           console.log(`Updated Strava activity ${activity.id} (title: "${title || detail.name}") with ${videoUrl}`);
+          // Signals the "delete consumed ride summary" step downstream — only set on a
+          // genuine Strava write, never on the early skip branches above.
+          emitOutput('strava_updated', 'true');
+
+          // 9. Mirror the description onto the YouTube video itself, linking back to
+          //    Strava instead of to the video. Best-effort: never fails the run, since
+          //    the Strava update above is the primary deliverable and already succeeded.
+          const YT_OAUTH_ID     = process.env.YOUTUBE_OAUTH_CLIENT_ID;
+          const YT_OAUTH_SECRET = process.env.YOUTUBE_OAUTH_CLIENT_SECRET;
+          const YT_OAUTH_REFRESH = process.env.YOUTUBE_OAUTH_REFRESH_TOKEN;
+          if (!YT_OAUTH_ID || !YT_OAUTH_SECRET || !YT_OAUTH_REFRESH) {
+            console.log('YouTube OAuth secrets not configured — skipping YouTube description sync.');
+          } else {
+            try {
+              const ytTokenRes = await fetch('https://oauth2.googleapis.com/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: new URLSearchParams({
+                  client_id: YT_OAUTH_ID,
+                  client_secret: YT_OAUTH_SECRET,
+                  refresh_token: YT_OAUTH_REFRESH,
+                  grant_type: 'refresh_token',
+                }).toString(),
+              });
+              const ytTokenData = await ytTokenRes.json();
+              if (!ytTokenData.access_token) {
+                throw new Error('YouTube OAuth refresh failed: ' + JSON.stringify(ytTokenData));
+              }
+              const ytAccessToken = ytTokenData.access_token;
+
+              // videos.update requires resending the whole snippet (title/categoryId/etc.)
+              // or YouTube silently clears the fields we don't include — fetch it first.
+              const snippetRes = await fetch(
+                `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(videoId)}`,
+                { headers: { Authorization: `Bearer ${ytAccessToken}` } }
+              );
+              const snippetData = await snippetRes.json();
+              const currentSnippet = (snippetData.items || [])[0]?.snippet;
+              if (!currentSnippet) {
+                throw new Error('Could not fetch current YouTube video snippet.');
+              }
+
+              const currentYtDescription = currentSnippet.description || '';
+              if (currentYtDescription.includes(stravaActivityUrl)) {
+                console.log('Strava link already in YouTube description — skipping YouTube sync.');
+              } else {
+                const ytParts = [];
+                if (hook) ytParts.push(hook);
+                ytParts.push(statLine);
+                ytParts.push(`Full ride data on Strava 🚴\n${stravaActivityUrl}`);
+                const ytBlock = ytParts.join('\n\n');
+                const mutatedDescription = currentYtDescription
+                  ? `${currentYtDescription}\n\n${ytBlock}`
+                  : ytBlock;
+
+                const updateRes = await fetch('https://www.googleapis.com/youtube/v3/videos?part=snippet', {
+                  method: 'PUT',
+                  headers: {
+                    Authorization: `Bearer ${ytAccessToken}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    id: videoId,
+                    snippet: { ...currentSnippet, description: mutatedDescription },
+                  }),
+                });
+                if (!updateRes.ok) {
+                  const errBody = await updateRes.text();
+                  throw new Error(`YouTube videos.update failed (${updateRes.status}): ${errBody}`);
+                }
+                console.log(`Updated YouTube video ${videoId} description to link back to ${stravaActivityUrl}`);
+              }
+            } catch (err) {
+              console.error('YouTube description sync failed (non-fatal):', err.message);
+            }
+          }
           EOF
+
+      - name: Delete consumed ride summary
+        if: steps.ride_summary.outputs.found == 'true' && steps.sync.outputs.strava_updated == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA=$(gh api repos/${{ github.repository }}/contents/data/ride-summary.json --jq .sha)
+          gh api -X DELETE repos/${{ github.repository }}/contents/data/ride-summary.json \
+            -f message="ride-summary: consumed by run ${{ github.run_id }}" -f sha="$SHA"
