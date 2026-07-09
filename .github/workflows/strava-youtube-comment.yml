@@ -122,8 +122,10 @@ jobs:
           const timeStr = `${Math.floor(totalMin / 60)}:${String(totalMin % 60).padStart(2, '0')}`;
           const ft = Math.round((detail.total_elevation_gain || 0) * 3.28084).toLocaleString('en-US');
 
-          // 6. Generate an understated, evocative opener with Claude.
-          //    Falls back to the video title if the key is missing or the call fails.
+          // 6. Generate an understated title + evocative opener with Claude.
+          //    Falls back to the existing title and the video title as the
+          //    opener if the key is missing or the call fails.
+          let title = null;
           let hook = videoTitle;
           if (CLAUDE_KEY) {
             try {
@@ -131,23 +133,24 @@ jobs:
                 (detail.segment_efforts || []).map(e => e.segment_name || (e.segment && e.segment.name)).filter(Boolean)
               )].slice(0, 12);
               const prompt = [
-                'Write the opening of a Strava cycling activity description: one or two short sentences.',
+                'Write a title and an opening line for a Strava cycling activity.',
                 '',
-                'Style rules:',
-                '- Understated but evocative; sense of place over hype.',
+                'Style rules (apply to both):',
+                '- Understated but catchy; sense of place over hype.',
                 '- Weave in real place names from the segment list where natural.',
                 '- Never mention PRs, achievements, speed, or performance — no bragging.',
                 '- No calls to action, no hashtags, no emoji, no quotation marks.',
-                '- The goal is to quietly make the reader curious enough to watch the ride video linked below it, without ever asking them to.',
+                '- The opener should quietly make the reader curious enough to watch the ride video linked below it, without ever asking them to.',
+                '',
+                'Title: a short activity title (roughly 3-7 words). Example style: "Morning Miles Under the Tetons".',
+                'Opener: one or two short sentences for the top of the activity description.',
                 '',
                 'Ride data:',
-                `- Activity name: ${detail.name}`,
+                `- Current activity name: ${detail.name}`,
                 `- Start (local): ${detail.start_date_local}`,
                 `- Distance: ${mi} mi · Moving time: ${timeStr} · Elevation gain: ${ft} ft`,
                 `- Video title: ${videoTitle}`,
                 `- Segments ridden: ${segments.join('; ') || 'n/a'}`,
-                '',
-                'Reply with ONLY the sentence(s) — no preamble, no explanation.',
               ].join('\n');
 
               const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
@@ -161,24 +164,39 @@ jobs:
                   model: 'claude-opus-4-8',
                   max_tokens: 1024,
                   messages: [{ role: 'user', content: prompt }],
+                  output_config: {
+                    format: {
+                      type: 'json_schema',
+                      schema: {
+                        type: 'object',
+                        properties: {
+                          title: { type: 'string' },
+                          opener: { type: 'string' },
+                        },
+                        required: ['title', 'opener'],
+                        additionalProperties: false,
+                      },
+                    },
+                  },
                 }),
               });
               const claudeData = await claudeRes.json();
               if (claudeRes.ok && claudeData.stop_reason !== 'refusal') {
                 const text = (claudeData.content || [])
-                  .filter(b => b.type === 'text').map(b => b.text).join('').trim()
-                  .replace(/^["']|["']$/g, '');
-                if (text && text.length <= 400) {
-                  hook = text;
-                  console.log('Using Claude-generated opener.');
-                } else {
-                  console.log('Claude reply empty or too long — falling back to video title.');
+                  .filter(b => b.type === 'text').map(b => b.text).join('').trim();
+                const parsed = JSON.parse(text);
+                if (parsed.title && parsed.title.length <= 100) {
+                  title = parsed.title.trim();
                 }
+                if (parsed.opener && parsed.opener.length <= 400) {
+                  hook = parsed.opener.trim();
+                }
+                console.log('Using Claude-generated title and opener.');
               } else {
-                console.log('Claude API error — falling back to video title:', JSON.stringify(claudeData.error || claudeData.stop_reason));
+                console.log('Claude API error — falling back to existing title / video title:', JSON.stringify(claudeData.error || claudeData.stop_reason));
               }
             } catch (err) {
-              console.log('Claude call failed — falling back to video title:', err.message);
+              console.log('Claude call failed — falling back to existing title / video title:', err.message);
             }
           }
 
@@ -190,9 +208,11 @@ jobs:
           const block = parts.join('\n\n');
           const newDescription = description ? `${description}\n\n${block}` : block;
 
-          // 8. Update the activity description
+          // 8. Update the activity description (and title, if Claude generated one)
           //    (Strava's API no longer allows posting comments, so we update
-          //    the description instead — fully supported with activity:write)
+          //    the activity directly instead — fully supported with activity:write)
+          const updateBody = { description: newDescription };
+          if (title) updateBody.name = title;
           const updRes = await fetch(
             `https://www.strava.com/api/v3/activities/${activity.id}`,
             {
@@ -201,7 +221,7 @@ jobs:
                 Authorization: `Bearer ${access_token}`,
                 'Content-Type': 'application/x-www-form-urlencoded',
               },
-              body: new URLSearchParams({ description: newDescription }).toString(),
+              body: new URLSearchParams(updateBody).toString(),
             }
           );
           if (!updRes.ok) {
@@ -209,5 +229,5 @@ jobs:
             console.error(`Strava activity update failed (${updRes.status}):`, body);
             process.exit(1);
           }
-          console.log(`Updated description of Strava activity ${activity.id} (${activity.name}) with ${videoUrl}`);
+          console.log(`Updated Strava activity ${activity.id} (title: "${title || detail.name}") with ${videoUrl}`);
           EOF
