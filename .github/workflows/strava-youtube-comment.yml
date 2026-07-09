@@ -122,7 +122,7 @@ jobs:
           const timeStr = `${Math.floor(totalMin / 60)}:${String(totalMin % 60).padStart(2, '0')}`;
           const ft = Math.round((detail.total_elevation_gain || 0) * 3.28084).toLocaleString('en-US');
 
-          // 6. Generate an understated title + evocative opener with Claude.
+          // 6. Generate an understated title + plain, factual opener with Claude.
           //    Falls back to the existing title and the video title as the
           //    opener if the key is missing or the call fails.
           let title = null;
@@ -136,14 +136,16 @@ jobs:
                 'Write a title and an opening line for a Strava cycling activity.',
                 '',
                 'Style rules (apply to both):',
-                '- Understated but catchy; sense of place over hype.',
+                '- Plain and factual. State what the route was — roads, terrain, landmarks — the way you\'d describe it to a friend, not narrate a feeling.',
                 '- Weave in real place names from the segment list where natural.',
                 '- Never mention PRs, achievements, speed, or performance — no bragging.',
                 '- No calls to action, no hashtags, no emoji, no quotation marks.',
-                '- The opener should quietly make the reader curious enough to watch the ride video linked below it, without ever asking them to.',
+                '- BANNED: metaphor, personification (light/gravel/road "doing" something), rhetorical questions, invented internal feelings or unexplainable moments ("something I couldn\'t explain"), any line that sounds like the opening of a blog post or travel essay.',
+                '- The opener should quietly make the reader curious enough to watch the ride video linked below it, without ever asking them to, and without overselling it.',
                 '',
-                'Title: a short activity title (roughly 3-7 words). Example style: "Morning Miles Under the Tetons".',
-                'Opener: one or two short sentences for the top of the activity description.',
+                'Title: a short activity title (roughly 3-7 words). Good example: "Morning Miles Under the Tetons".',
+                'Opener: one or two short sentences for the top of the activity description. Good example (plain, factual, no metaphor): "Morning spin up Moose–Wilson Road and through the park to Jenny Lake — quiet roads, two stretches of gravel, and the Tetons out in full the whole way."',
+                'Bad example (too flowery — do not write like this): "The gravel stretch north of the fee station has a way of pulling your eyes off the road and toward the ridgeline. Somewhere between Jenny Lake and the Moose entrance the morning light did something I couldn\'t quite explain."',
                 '',
                 'Ride data:',
                 `- Current activity name: ${detail.name}`,
