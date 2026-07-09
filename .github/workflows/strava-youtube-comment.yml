@@ -16,6 +16,7 @@ jobs:
           STRAVA_CLIENT_ID:     ${{ secrets.STRAVA_CLIENT_ID }}
           STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
           STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
+          ANTHROPIC_API_KEY:    ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           node --input-type=module <<'EOF'
           const YT_KEY     = process.env.YOUTUBE_API_KEY;
@@ -23,6 +24,7 @@ jobs:
           const S_ID       = process.env.STRAVA_CLIENT_ID;
           const S_SECRET   = process.env.STRAVA_CLIENT_SECRET;
           const S_REFRESH  = process.env.STRAVA_REFRESH_TOKEN;
+          const CLAUDE_KEY = process.env.ANTHROPIC_API_KEY;
 
           if (!YT_KEY || !YT_CHANNEL || !S_ID || !S_SECRET || !S_REFRESH) {
             console.log('Missing required secrets — skipping.');
@@ -68,6 +70,10 @@ jobs:
           }
           const videoUrl = `https://www.youtube.com/watch?v=${video.id.videoId}`;
           const videoPublished = new Date(video.snippet.publishedAt).getTime();
+          const decodeEntities = (s) => s
+            .replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+            .replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+          const videoTitle = decodeEntities(video.snippet.title || '').trim();
 
           // 3. Fetch latest Strava activity
           const actRes = await fetch(
@@ -95,8 +101,7 @@ jobs:
             process.exit(0);
           }
 
-          // 5. Fetch the full activity to read its current description + stats
-          //    (the list endpoint returns summaries without descriptions)
+          // 5. Fetch the full activity (description, stats, segment names)
           const detRes = await fetch(
             `https://www.strava.com/api/v3/activities/${activity.id}`,
             { headers: { Authorization: `Bearer ${access_token}` } }
@@ -112,29 +117,80 @@ jobs:
             process.exit(0);
           }
 
-          // 6. Compose the description block:
-          //    video title as the hook, one stat line, camera line + link.
-          //    Understated by design — no PR/achievement talk, no calls to action.
-          const decodeEntities = (s) => s
-            .replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
-            .replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-          const hook = decodeEntities(video.snippet.title || '').trim();
-
           const mi = (detail.distance / 1609.344).toFixed(1);
           const totalMin = Math.round(detail.moving_time / 60);
           const timeStr = `${Math.floor(totalMin / 60)}:${String(totalMin % 60).padStart(2, '0')}`;
           const ft = Math.round((detail.total_elevation_gain || 0) * 3.28084).toLocaleString('en-US');
 
+          // 6. Generate an understated, evocative opener with Claude.
+          //    Falls back to the video title if the key is missing or the call fails.
+          let hook = videoTitle;
+          if (CLAUDE_KEY) {
+            try {
+              const segments = [...new Set(
+                (detail.segment_efforts || []).map(e => e.segment_name || (e.segment && e.segment.name)).filter(Boolean)
+              )].slice(0, 12);
+              const prompt = [
+                'Write the opening of a Strava cycling activity description: one or two short sentences.',
+                '',
+                'Style rules:',
+                '- Understated but evocative; sense of place over hype.',
+                '- Weave in real place names from the segment list where natural.',
+                '- Never mention PRs, achievements, speed, or performance — no bragging.',
+                '- No calls to action, no hashtags, no emoji, no quotation marks.',
+                '- The goal is to quietly make the reader curious enough to watch the ride video linked below it, without ever asking them to.',
+                '',
+                'Ride data:',
+                `- Activity name: ${detail.name}`,
+                `- Start (local): ${detail.start_date_local}`,
+                `- Distance: ${mi} mi · Moving time: ${timeStr} · Elevation gain: ${ft} ft`,
+                `- Video title: ${videoTitle}`,
+                `- Segments ridden: ${segments.join('; ') || 'n/a'}`,
+                '',
+                'Reply with ONLY the sentence(s) — no preamble, no explanation.',
+              ].join('\n');
+
+              const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                  'x-api-key': CLAUDE_KEY,
+                  'anthropic-version': '2023-06-01',
+                  'content-type': 'application/json',
+                },
+                body: JSON.stringify({
+                  model: 'claude-opus-4-8',
+                  max_tokens: 1024,
+                  messages: [{ role: 'user', content: prompt }],
+                }),
+              });
+              const claudeData = await claudeRes.json();
+              if (claudeRes.ok && claudeData.stop_reason !== 'refusal') {
+                const text = (claudeData.content || [])
+                  .filter(b => b.type === 'text').map(b => b.text).join('').trim()
+                  .replace(/^["']|["']$/g, '');
+                if (text && text.length <= 400) {
+                  hook = text;
+                  console.log('Using Claude-generated opener.');
+                } else {
+                  console.log('Claude reply empty or too long — falling back to video title.');
+                }
+              } else {
+                console.log('Claude API error — falling back to video title:', JSON.stringify(claudeData.error || claudeData.stop_reason));
+              }
+            } catch (err) {
+              console.log('Claude call failed — falling back to video title:', err.message);
+            }
+          }
+
+          // 7. Compose the description: opener, one stat line, camera line + link
           const parts = [];
           if (hook) parts.push(hook);
           parts.push(`${mi} mi · ${timeStr} · ${ft} ft`);
           parts.push(`Brought the camera along for this one 🎥\n${videoUrl}`);
           const block = parts.join('\n\n');
-
-          // Preserve anything already written in the description
           const newDescription = description ? `${description}\n\n${block}` : block;
 
-          // 7. Update the activity description
+          // 8. Update the activity description
           //    (Strava's API no longer allows posting comments, so we update
           //    the description instead — fully supported with activity:write)
           const updRes = await fetch(
