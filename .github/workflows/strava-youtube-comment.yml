@@ -95,7 +95,7 @@ jobs:
             process.exit(0);
           }
 
-          // 5. Fetch the full activity to read its current description
+          // 5. Fetch the full activity to read its current description + stats
           //    (the list endpoint returns summaries without descriptions)
           const detRes = await fetch(
             `https://www.strava.com/api/v3/activities/${activity.id}`,
@@ -112,12 +112,31 @@ jobs:
             process.exit(0);
           }
 
-          // 6. Append the YouTube link to the activity description
+          // 6. Compose the description block:
+          //    video title as the hook, one stat line, camera line + link.
+          //    Understated by design — no PR/achievement talk, no calls to action.
+          const decodeEntities = (s) => s
+            .replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+            .replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+          const hook = decodeEntities(video.snippet.title || '').trim();
+
+          const mi = (detail.distance / 1609.344).toFixed(1);
+          const totalMin = Math.round(detail.moving_time / 60);
+          const timeStr = `${Math.floor(totalMin / 60)}:${String(totalMin % 60).padStart(2, '0')}`;
+          const ft = Math.round((detail.total_elevation_gain || 0) * 3.28084).toLocaleString('en-US');
+
+          const parts = [];
+          if (hook) parts.push(hook);
+          parts.push(`${mi} mi · ${timeStr} · ${ft} ft`);
+          parts.push(`Brought the camera along for this one 🎥\n${videoUrl}`);
+          const block = parts.join('\n\n');
+
+          // Preserve anything already written in the description
+          const newDescription = description ? `${description}\n\n${block}` : block;
+
+          // 7. Update the activity description
           //    (Strava's API no longer allows posting comments, so we update
           //    the description instead — fully supported with activity:write)
-          const newDescription = description
-            ? `${description}\n\n🎥 Ride video: ${videoUrl}`
-            : `🎥 Ride video: ${videoUrl}`;
           const updRes = await fetch(
             `https://www.strava.com/api/v3/activities/${activity.id}`,
             {
@@ -134,5 +153,5 @@ jobs:
             console.error(`Strava activity update failed (${updRes.status}):`, body);
             process.exit(1);
           }
-          console.log(`Added ${videoUrl} to description of Strava activity ${activity.id} (${activity.name})`);
+          console.log(`Updated description of Strava activity ${activity.id} (${activity.name}) with ${videoUrl}`);
           EOF
