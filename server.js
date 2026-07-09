@@ -23,6 +23,32 @@ const CLIENT_ID = process.env.TWITCH_CLIENT_ID || ""; // login app (public) — 
 const BADGE_CLIENT_ID = process.env.TWITCH_BADGE_CLIENT_ID || CLIENT_ID;
 const CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
 
+// AI features (voice ride plan → Twitch title) — calls Claude directly; the key
+// never leaves the server.
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+// Ride-summary bridge: the relay has no persistent storage of its own (Render's
+// free tier resets in-memory state on every sleep/restart), so a voice-dictated
+// post-ride summary is committed to this repo via the GitHub Contents API and
+// picked up later by the Strava/YouTube GitHub Actions workflow.
+const GITHUB_CONTENT_PAT = process.env.GITHUB_CONTENT_PAT || "";
+const GITHUB_REPO = "PeloTom89/slipstreamirl-relay";
+const RIDE_SUMMARY_PATH = "data/ride-summary.json";
+
+const TWITCH_TITLE_PROMPT = [
+  "Write a Twitch stream title for a cycling livestream, based on the rider's spoken plan for today's ride.",
+  "",
+  "Style rules:",
+  "- Punchier and more direct than a quiet personal log — this needs to catch attention in Twitch's browse feed.",
+  "- Name the actual plan: the route, the goal, or the effort, using specifics from what the rider said.",
+  "- No clickbait, no ALL CAPS, no excessive punctuation, no hashtags, no emoji spam (one emoji is fine, not required).",
+  "- Keep it under 140 characters (Twitch's hard limit).",
+  "- No quotation marks in the output.",
+  "",
+  "Good example: \"Chasing sunrise up Moose-Wilson Road 🚴\"",
+  "Bad example (too flat/generic): \"Cycling stream\"",
+  "Bad example (too much hype): \"INSANE 50 MILE RIDE!!! YOU WON'T BELIEVE THIS 🔥🔥🔥\"",
+].join("\n");
+
 // Overlay pages served straight from this service (one deploy / one URL).
 // Control is the native SlipstreamIRL app now; "/" just returns a status line.
 const PAGES = {
@@ -252,6 +278,119 @@ const server = http.createServer((req, res) => {
       broadcast(msg);
       res.writeHead(200, { "Access-Control-Allow-Origin": "*", "Content-Type": "text/plain" });
       res.end("ok");
+    });
+    return;
+  }
+
+  // AI: generate a Twitch stream title from a dictated ride-plan transcript. The
+  // app calls this before START STREAM, then applies the returned title to Twitch
+  // itself using its own OAuth token — this endpoint only ever talks to Claude,
+  // so the Anthropic key never has to leave the server.
+  //   POST /ai/twitch-title?token=RELAY_TOKEN   body: {"transcript":"..."}
+  if (req.method === "POST" && pathOnly === "/ai/twitch-title") {
+    const token = new URL(req.url, "http://x").searchParams.get("token");
+    if (token !== TOKEN) { res.writeHead(401); res.end(); return; }
+    let body = "";
+    req.on("data", (c) => { body += c; if (body.length > 1e4) req.destroy(); });
+    req.on("end", async () => {
+      const done = (status, obj) => {
+        res.writeHead(status, { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" });
+        res.end(JSON.stringify(obj));
+      };
+      let transcript;
+      try { ({ transcript } = JSON.parse(body)); } catch { return done(400, { error: "bad json" }); }
+      if (!transcript || typeof transcript !== "string" || !transcript.trim()) {
+        return done(400, { error: "transcript required" });
+      }
+      if (!ANTHROPIC_API_KEY) return done(503, { error: "ANTHROPIC_API_KEY not configured" });
+      try {
+        const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "claude-opus-4-8",
+            max_tokens: 300,
+            messages: [{ role: "user", content: `${TWITCH_TITLE_PROMPT}\n\nRider's spoken plan:\n${transcript.trim()}` }],
+            output_config: {
+              format: {
+                type: "json_schema",
+                schema: {
+                  type: "object",
+                  properties: { title: { type: "string" } },
+                  required: ["title"],
+                  additionalProperties: false,
+                },
+              },
+            },
+          }),
+        });
+        const claudeData = await claudeRes.json();
+        if (!claudeRes.ok || claudeData.stop_reason === "refusal") {
+          return done(502, { error: "title generation failed" });
+        }
+        const text = (claudeData.content || []).filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+        const parsed = JSON.parse(text);
+        const title = String(parsed.title || "").trim().slice(0, 140);
+        if (!title) return done(502, { error: "empty title" });
+        done(200, { title });
+      } catch (e) {
+        done(502, { error: "title generation failed" });
+      }
+    });
+    return;
+  }
+
+  // Ride summary: park a voice-dictated post-ride summary in this repo (via the
+  // GitHub Contents API) so the later-running Strava/YouTube workflow can pick it
+  // up — the relay itself has no persistent storage that would survive that long.
+  //   POST /ride-summary?token=RELAY_TOKEN   body: {"summary":"...","recordedAt":"..."}
+  if (req.method === "POST" && pathOnly === "/ride-summary") {
+    const token = new URL(req.url, "http://x").searchParams.get("token");
+    if (token !== TOKEN) { res.writeHead(401); res.end(); return; }
+    let body = "";
+    req.on("data", (c) => { body += c; if (body.length > 2e4) req.destroy(); });
+    req.on("end", async () => {
+      const done = (status, obj) => {
+        res.writeHead(status, { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" });
+        res.end(JSON.stringify(obj));
+      };
+      let summary, recordedAt;
+      try { ({ summary, recordedAt } = JSON.parse(body)); } catch { return done(400, { error: "bad json" }); }
+      if (!summary || typeof summary !== "string" || !summary.trim()) {
+        return done(400, { error: "summary required" });
+      }
+      if (!GITHUB_CONTENT_PAT) return done(503, { error: "GITHUB_CONTENT_PAT not configured" });
+      try {
+        const ghHeaders = {
+          Authorization: "Bearer " + GITHUB_CONTENT_PAT,
+          Accept: "application/vnd.github+json",
+          "Content-Type": "application/json",
+          "User-Agent": "slipstreamirl-relay",
+        };
+        const contentsUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/${RIDE_SUMMARY_PATH}`;
+        let sha;
+        const getRes = await fetch(contentsUrl, { headers: ghHeaders });
+        if (getRes.status === 200) sha = (await getRes.json()).sha;
+        else if (getRes.status !== 404) throw new Error("github get failed " + getRes.status);
+
+        const contentB64 = Buffer.from(JSON.stringify({
+          summary: summary.trim(),
+          recordedAt: recordedAt || new Date().toISOString(),
+        }, null, 2)).toString("base64");
+        const putRes = await fetch(contentsUrl, {
+          method: "PUT",
+          headers: ghHeaders,
+          body: JSON.stringify({ message: "ride-summary: update from app", content: contentB64, sha }),
+        });
+        if (!putRes.ok) throw new Error("github put failed " + putRes.status);
+        done(200, { ok: true });
+      } catch (e) {
+        done(502, { error: "failed to save ride summary" });
+      }
     });
     return;
   }
