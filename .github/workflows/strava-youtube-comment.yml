@@ -59,6 +59,7 @@ jobs:
           STRAVA_CLIENT_SECRET:       ${{ secrets.STRAVA_CLIENT_SECRET }}
           STRAVA_REFRESH_TOKEN:       ${{ secrets.STRAVA_REFRESH_TOKEN }}
           ANTHROPIC_API_KEY:          ${{ secrets.ANTHROPIC_API_KEY }}
+          MAPBOX_TOKEN:               ${{ secrets.MAPBOX_TOKEN }}
           RIDE_SUMMARY_JSON:          ${{ steps.ride_summary.outputs.summary }}
           DRY_RUN:                    ${{ github.event.inputs.dry_run }}
           RIDER_NOTES_OVERRIDE:       ${{ github.event.inputs.rider_notes_override }}
@@ -78,6 +79,7 @@ jobs:
           const S_SECRET   = process.env.STRAVA_CLIENT_SECRET;
           const S_REFRESH  = process.env.STRAVA_REFRESH_TOKEN;
           const CLAUDE_KEY = process.env.ANTHROPIC_API_KEY;
+          const MAPBOX_TOKEN = process.env.MAPBOX_TOKEN;
           // Preview mode: logs the title/description Claude would generate against the
           // latest activity, but never writes to Strava or YouTube. Useful for testing
           // prompt/logic changes without spending a real post.
@@ -211,6 +213,82 @@ jobs:
             } catch {}
           }
 
+          // 5c. Real road names from the GPS breadcrumb (optional — only runs if
+          //     MAPBOX_TOKEN is configured). Segment names above are Strava-defined
+          //     ride efforts, not roads; this uses actual map matching against the
+          //     ride's GPS trace to get the real roads ridden, ranked by how much
+          //     distance was covered on each. Every failure path here falls back to
+          //     silence (roadNames stays []) — this must never block the rest of the
+          //     pipeline, whether that's a missing token, a private/streamless
+          //     activity, or a Mapbox outage.
+          let roadNames = [];
+          if (MAPBOX_TOKEN) {
+            try {
+              const streamRes = await fetch(
+                `https://www.strava.com/api/v3/activities/${activity.id}/streams?keys=latlng&key_by_type=true`,
+                { headers: { Authorization: `Bearer ${access_token}` } }
+              );
+              if (streamRes.ok) {
+                const streamData = await streamRes.json();
+                const points = (streamData.latlng && streamData.latlng.data) || []; // [[lat,lng], ...]
+                if (points.length >= 2) {
+                  // Downsample: keep a point only once it's >=25m from the last kept
+                  // point (same decimation distance the relay's own breadcrumb trail
+                  // uses) — thousands of raw GPS points is far more than needed to
+                  // trace the route shape, and Mapbox caps requests at 100 points.
+                  const MIN_GAP_M = 25;
+                  const haversineM = (a, b) => {
+                    const R = 6371000, dLat = (b[0] - a[0]) * Math.PI / 180, dLng = (b[1] - a[1]) * Math.PI / 180;
+                    const lat = (a[0] + b[0]) / 2 * Math.PI / 180, x = dLng * Math.cos(lat);
+                    return Math.sqrt(dLat * dLat + x * x) * R;
+                  };
+                  const thinned = [points[0]];
+                  for (let i = 1; i < points.length; i++) {
+                    if (haversineM(thinned[thinned.length - 1], points[i]) >= MIN_GAP_M) thinned.push(points[i]);
+                  }
+                  const last = points[points.length - 1];
+                  if (thinned[thinned.length - 1] !== last) thinned.push(last);
+
+                  // Chunk into Mapbox's 100-coordinate-per-request limit.
+                  const CHUNK = 100;
+                  const chunks = [];
+                  for (let i = 0; i < thinned.length; i += CHUNK) chunks.push(thinned.slice(i, i + CHUNK));
+
+                  const namedDistances = new Map(); // road name -> total metres ridden on it
+                  for (const chunk of chunks) {
+                    if (chunk.length < 2) continue;
+                    const coordStr = chunk.map(([lat, lng]) => `${lng},${lat}`).join(';');
+                    // A generous 25m match radius per point — real GPS traces (especially
+                    // under tree cover / in canyons) wander more than Mapbox's tight
+                    // default, and a rejected match is worse than a slightly loose one.
+                    const radiusStr = chunk.map(() => '25').join(';');
+                    const url = `https://api.mapbox.com/matching/v5/mapbox/cycling/${coordStr}` +
+                      `?access_token=${encodeURIComponent(MAPBOX_TOKEN)}&steps=true&geometries=geojson` +
+                      `&overview=false&radiuses=${radiusStr}`;
+                    const mbRes = await fetch(url);
+                    if (!mbRes.ok) continue; // skip this chunk, never fail the run over it
+                    const mbData = await mbRes.json();
+                    const matching = (mbData.matchings || [])[0];
+                    if (!matching) continue;
+                    for (const leg of matching.legs || []) {
+                      for (const step of leg.steps || []) {
+                        const name = (step.name || '').trim();
+                        if (!name) continue;
+                        namedDistances.set(name, (namedDistances.get(name) || 0) + (step.distance || 0));
+                      }
+                    }
+                  }
+                  roadNames = [...namedDistances.entries()]
+                    .sort((a, b) => b[1] - a[1])
+                    .slice(0, 8)
+                    .map(([name]) => name);
+                }
+              }
+            } catch (e) {
+              console.log('Road-name map matching failed (non-fatal, falling back to segments only):', e.message);
+            }
+          }
+
           // 6. Generate an understated title + plain, factual opener with Claude.
           //    Falls back to the existing title and the video title as the
           //    opener if the key is missing or the call fails. Manual apply skips
@@ -251,6 +329,7 @@ jobs:
                 'Style rules (apply to both):',
                 '- Plain and factual. State what the route was — roads, terrain, landmarks — the way you\'d describe it to a friend, not narrate a feeling.',
                 '- The segment list below is Strava-defined ride efforts, ranked by rider popularity — NOT a list of road names. Only state one as the name of a road if it plausibly reads like one (e.g. "Moose-Wilson Rd"). Otherwise treat it as a landmark/feature reference, or leave it out rather than implying it was the road surface you rode on.',
+                '- The "Roads ridden" list, if present, IS real road names (matched from GPS, ranked by distance covered) — these you can state directly and confidently as the roads you were on, in roughly the order given.',
                 '- Never mention PRs, achievements, speed, or performance — no bragging.',
                 '- No calls to action, no hashtags, no emoji, no quotation marks.',
                 '- If the opener is two sentences, each sentence must add NEW information — a different place, feature, or detail. Never restate or rephrase the same landmark, road segment, or feature in both sentences.',
@@ -269,6 +348,9 @@ jobs:
                 `- Video title: ${videoTitle}`,
                 `- Popular segments ridden (most riders first): ${segments.join('; ') || 'n/a'}`,
               ];
+              if (roadNames.length) {
+                promptLines.push(`- Roads ridden (most distance first): ${roadNames.join('; ')}`);
+              }
               if (riderNotes) {
                 promptLines.push(
                   '',
