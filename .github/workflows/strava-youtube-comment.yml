@@ -30,6 +30,11 @@ on:
         required: false
         default: ''
         type: string
+      list_recent:
+        description: 'List your 10 most recent Strava activities (id, name, date, distance) and exit — no Claude/Mapbox calls, no YouTube check. Use to find an activity_id_override.'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -66,6 +71,7 @@ jobs:
           ACTIVITY_ID_OVERRIDE:       ${{ github.event.inputs.activity_id_override }}
           TITLE_OVERRIDE:             ${{ github.event.inputs.title_override }}
           OPENER_OVERRIDE:            ${{ github.event.inputs.opener_override }}
+          LIST_RECENT:                ${{ github.event.inputs.list_recent }}
           YOUTUBE_OAUTH_CLIENT_ID:     ${{ secrets.YOUTUBE_OAUTH_CLIENT_ID }}
           YOUTUBE_OAUTH_CLIENT_SECRET: ${{ secrets.YOUTUBE_OAUTH_CLIENT_SECRET }}
           YOUTUBE_OAUTH_REFRESH_TOKEN: ${{ secrets.YOUTUBE_OAUTH_REFRESH_TOKEN }}
@@ -121,6 +127,27 @@ jobs:
             process.exit(1);
           }
           const access_token = tokenData.access_token;
+
+          // Diagnostic mode: list recent activities and exit, before the YouTube
+          // check (which would otherwise skip the whole run if nothing's been
+          // uploaded in the last 24h) — this doesn't need a video at all.
+          if (process.env.LIST_RECENT === 'true') {
+            const listRes = await fetch(
+              'https://www.strava.com/api/v3/athlete/activities?per_page=10',
+              { headers: { Authorization: `Bearer ${access_token}` } }
+            );
+            if (!listRes.ok) {
+              console.error(`Strava activities fetch failed (${listRes.status}):`, await listRes.text());
+              process.exit(1);
+            }
+            const recent = await listRes.json();
+            console.log('===== 10 most recent activities =====');
+            for (const a of recent || []) {
+              const dist = (a.distance / 1609.344).toFixed(1);
+              console.log(`${a.id} | ${a.start_date_local} | ${dist} mi | ${a.name}`);
+            }
+            process.exit(0);
+          }
 
           // 2. Fetch latest YouTube video uploaded in the last 24 hours
           const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
