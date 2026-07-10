@@ -284,6 +284,7 @@ jobs:
                     .map(([name]) => name);
                 }
               }
+              console.log(`Road matching: ${roadNames.length ? roadNames.join('; ') : '(no named roads matched)'}`);
             } catch (e) {
               console.log('Road-name map matching failed (non-fatal, falling back to segments only):', e.message);
             }
