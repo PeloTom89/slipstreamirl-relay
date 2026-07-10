@@ -169,15 +169,38 @@ jobs:
           let hook = videoTitle;
           if (CLAUDE_KEY) {
             try {
-              const segments = [...new Set(
-                (detail.segment_efforts || []).map(e => e.segment_name || (e.segment && e.segment.name)).filter(Boolean)
-              )].slice(0, 12);
+              // Rank segments by Strava's own athlete_count (unique riders who've ever
+              // done it) rather than just ride order — the well-known, widely-ridden
+              // segments surface first instead of one-off/junk auto-generated ones.
+              // Dedupe by segment id (not name) first, capped to bound API calls.
+              const segmentIdPairs = [...new Map(
+                (detail.segment_efforts || [])
+                  .filter(e => e.segment && e.segment.id)
+                  .map(e => [e.segment.id, e.segment_name || e.segment.name])
+              ).entries()].slice(0, 15);
+              const segmentPopularity = await Promise.all(segmentIdPairs.map(async ([id, name]) => {
+                try {
+                  const segRes = await fetch(`https://www.strava.com/api/v3/segments/${id}`, {
+                    headers: { Authorization: `Bearer ${access_token}` },
+                  });
+                  if (!segRes.ok) return { name, athleteCount: 0 };
+                  const segDetail = await segRes.json();
+                  return { name, athleteCount: segDetail.athlete_count || 0 };
+                } catch {
+                  return { name, athleteCount: 0 };
+                }
+              }));
+              const segments = segmentPopularity
+                .sort((a, b) => b.athleteCount - a.athleteCount)
+                .slice(0, 6)
+                .map(s => s.name)
+                .filter(Boolean);
               const promptLines = [
                 'Write a title and an opening line for a Strava cycling activity.',
                 '',
                 'Style rules (apply to both):',
                 '- Plain and factual. State what the route was — roads, terrain, landmarks — the way you\'d describe it to a friend, not narrate a feeling.',
-                '- Weave in real place names from the segment list where natural.',
+                '- The segment list below is Strava-defined ride efforts, ranked by rider popularity — NOT a list of road names. Only state one as the name of a road if it plausibly reads like one (e.g. "Moose-Wilson Rd"). Otherwise treat it as a landmark/feature reference, or leave it out rather than implying it was the road surface you rode on.',
                 '- Never mention PRs, achievements, speed, or performance — no bragging.',
                 '- No calls to action, no hashtags, no emoji, no quotation marks.',
                 '- If the opener is two sentences, each sentence must add NEW information — a different place, feature, or detail. Never restate or rephrase the same landmark, road segment, or feature in both sentences.',
@@ -194,7 +217,7 @@ jobs:
                 `- Start (local): ${detail.start_date_local}`,
                 `- Distance: ${mi} mi · Moving time: ${timeStr} · Elevation gain: ${ft} ft`,
                 `- Video title: ${videoTitle}`,
-                `- Segments ridden: ${segments.join('; ') || 'n/a'}`,
+                `- Popular segments ridden (most riders first): ${segments.join('; ') || 'n/a'}`,
               ];
               if (riderNotes) {
                 promptLines.push(
