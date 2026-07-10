@@ -359,7 +359,7 @@ jobs:
                   for (const [lat, lng] of landmarkSamples) {
                     try {
                       const nlUrl = `https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/tilequery/${lng},${lat}.json` +
-                        `?radius=${LANDMARK_RADIUS_M}&limit=10&layers=natural_label&access_token=${encodeURIComponent(MAPBOX_TOKEN)}`;
+                        `?radius=${LANDMARK_RADIUS_M}&limit=50&layers=natural_label&access_token=${encodeURIComponent(MAPBOX_TOKEN)}`;
                       const nlRes = await fetch(nlUrl);
                       if (!nlRes.ok) continue;
                       const nlData = await nlRes.json();
@@ -367,6 +367,9 @@ jobs:
                         const name = (feature.properties && feature.properties.name || '').trim();
                         if (!name || landmarkSeen.has(name)) continue;
                         landmarkSeen.add(name);
+                        // TEMP DEBUG: inspect raw class/type/sizerank fields to figure out
+                        // how to prioritize peaks — remove once that's nailed down.
+                        console.log('  [debug] landmark feature:', JSON.stringify(feature.properties));
                         landmarkOrdered.push(name);
                       }
                     } catch { /* skip this sample point, never fail the run over it */ }
