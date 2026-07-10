@@ -4,6 +4,17 @@ on:
   schedule:
     - cron: '*/30 * * * *'  # every 30 minutes
   workflow_dispatch:         # manual trigger for testing
+    inputs:
+      dry_run:
+        description: 'Simulate only — log the title/description Claude would generate, never write to Strava or YouTube'
+        required: false
+        default: false
+        type: boolean
+      rider_notes_override:
+        description: 'Optional rider notes to simulate with (dry run only) — data/ride-summary.json is usually already consumed by the time you want to preview'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -34,6 +45,8 @@ jobs:
           STRAVA_REFRESH_TOKEN:       ${{ secrets.STRAVA_REFRESH_TOKEN }}
           ANTHROPIC_API_KEY:          ${{ secrets.ANTHROPIC_API_KEY }}
           RIDE_SUMMARY_JSON:          ${{ steps.ride_summary.outputs.summary }}
+          DRY_RUN:                    ${{ github.event.inputs.dry_run }}
+          RIDER_NOTES_OVERRIDE:       ${{ github.event.inputs.rider_notes_override }}
           YOUTUBE_OAUTH_CLIENT_ID:     ${{ secrets.YOUTUBE_OAUTH_CLIENT_ID }}
           YOUTUBE_OAUTH_CLIENT_SECRET: ${{ secrets.YOUTUBE_OAUTH_CLIENT_SECRET }}
           YOUTUBE_OAUTH_REFRESH_TOKEN: ${{ secrets.YOUTUBE_OAUTH_REFRESH_TOKEN }}
@@ -47,6 +60,11 @@ jobs:
           const S_SECRET   = process.env.STRAVA_CLIENT_SECRET;
           const S_REFRESH  = process.env.STRAVA_REFRESH_TOKEN;
           const CLAUDE_KEY = process.env.ANTHROPIC_API_KEY;
+          // Preview mode: logs the title/description Claude would generate against the
+          // latest activity, but never writes to Strava or YouTube. Useful for testing
+          // prompt/logic changes without spending a real post.
+          const DRY_RUN = process.env.DRY_RUN === 'true';
+          const RIDER_NOTES_OVERRIDE = (process.env.RIDER_NOTES_OVERRIDE || '').trim();
 
           function emitOutput(key, value) {
             if (process.env.GITHUB_OUTPUT) {
@@ -142,7 +160,7 @@ jobs:
           }
           const detail = await detRes.json();
           const description = detail.description || '';
-          if (description.includes('youtube.com')) {
+          if (!DRY_RUN && description.includes('youtube.com')) {
             console.log('YouTube link already in activity description — skipping.');
             process.exit(0);
           }
@@ -154,13 +172,15 @@ jobs:
 
           // 5b. Rider's own dictated ride summary, if one was recorded after !stop.
           //     Purely additive context for Claude — every tone rule below still applies.
-          let riderNotes = null;
-          try {
-            const parsed = JSON.parse(process.env.RIDE_SUMMARY_JSON || 'null');
-            if (parsed && typeof parsed.summary === 'string' && parsed.summary.trim()) {
-              riderNotes = parsed.summary.trim();
-            }
-          } catch {}
+          let riderNotes = RIDER_NOTES_OVERRIDE || null;
+          if (!riderNotes) {
+            try {
+              const parsed = JSON.parse(process.env.RIDE_SUMMARY_JSON || 'null');
+              if (parsed && typeof parsed.summary === 'string' && parsed.summary.trim()) {
+                riderNotes = parsed.summary.trim();
+              }
+            } catch {}
+          }
 
           // 6. Generate an understated title + plain, factual opener with Claude.
           //    Falls back to the existing title and the video title as the
@@ -283,6 +303,14 @@ jobs:
           parts.push(`Brought the camera along for this one 🎥\n${videoUrl}`);
           const block = parts.join('\n\n');
           const newDescription = description ? `${description}\n\n${block}` : block;
+
+          if (DRY_RUN) {
+            console.log('===== DRY RUN — nothing written to Strava or YouTube =====');
+            console.log('Title:', title || `(unchanged: "${detail.name}")`);
+            console.log('Description that would be appended:\n' + block);
+            console.log('Full new description:\n' + newDescription);
+            process.exit(0);
+          }
 
           // 8. Update the activity description (and title, if Claude generated one)
           //    (Strava's API no longer allows posting comments, so we update
