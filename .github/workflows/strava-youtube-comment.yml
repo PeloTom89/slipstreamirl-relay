@@ -250,6 +250,7 @@ jobs:
           //     activity, or a Mapbox outage.
           let roadNames = [];
           let poiNames = [];
+          let landmarkNames = [];
           if (MAPBOX_TOKEN) {
             try {
               const streamRes = await fetch(
@@ -340,10 +341,42 @@ jobs:
                     } catch { /* skip this sample point, never fail the run over it */ }
                   }
                   poiNames = poiOrdered.slice(0, 10);
+
+                  // Prominent visible landmarks (mountains, lakes) — a fundamentally
+                  // different query than the trailside POIs above: something like Grand
+                  // Teton can dominate the view for an entire ride while being many
+                  // kilometres from the actual road, so a large radius is needed, and
+                  // sampling it every ~1km would be wildly redundant (adjacent samples
+                  // would all "see" the same peak). A handful of points spread across
+                  // the route is enough.
+                  const LANDMARK_RADIUS_M = 25000;
+                  const landmarkSampleCount = Math.min(3, thinned.length);
+                  const landmarkSamples = Array.from({ length: landmarkSampleCount }, (_, i) =>
+                    thinned[Math.floor(i * (thinned.length - 1) / Math.max(1, landmarkSampleCount - 1))]
+                  );
+                  const landmarkSeen = new Set();
+                  const landmarkOrdered = [];
+                  for (const [lat, lng] of landmarkSamples) {
+                    try {
+                      const nlUrl = `https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/tilequery/${lng},${lat}.json` +
+                        `?radius=${LANDMARK_RADIUS_M}&limit=10&layers=natural_label&access_token=${encodeURIComponent(MAPBOX_TOKEN)}`;
+                      const nlRes = await fetch(nlUrl);
+                      if (!nlRes.ok) continue;
+                      const nlData = await nlRes.json();
+                      for (const feature of nlData.features || []) {
+                        const name = (feature.properties && feature.properties.name || '').trim();
+                        if (!name || landmarkSeen.has(name)) continue;
+                        landmarkSeen.add(name);
+                        landmarkOrdered.push(name);
+                      }
+                    } catch { /* skip this sample point, never fail the run over it */ }
+                  }
+                  landmarkNames = landmarkOrdered.slice(0, 6);
                 }
               }
               console.log(`Road matching: ${roadNames.length ? roadNames.join('; ') : '(no named roads matched)'}`);
               console.log(`POI matching: ${poiNames.length ? poiNames.join('; ') : '(no points of interest matched)'}`);
+              console.log(`Landmark matching: ${landmarkNames.length ? landmarkNames.join('; ') : '(no landmarks matched)'}`);
             } catch (e) {
               console.log('Road-name map matching failed (non-fatal, falling back to segments only):', e.message);
             }
@@ -391,6 +424,7 @@ jobs:
                 '- The segment list below is Strava-defined ride efforts, ranked by rider popularity — NOT a list of road names. Only state one as the name of a road if it plausibly reads like one (e.g. "Moose-Wilson Rd"). Otherwise treat it as a landmark/feature reference, or leave it out rather than implying it was the road surface you rode on.',
                 '- The "Roads ridden" list, if present, IS real road names (matched from GPS, ranked by distance covered) — these you can state directly and confidently as the roads you were on, in roughly the order given.',
                 '- The "Points of interest passed" list, if present, are real named places near the route (parks, viewpoints, landmarks) — phrase these as things you rode near/past, not things you stopped at or rode on, unless the rider\'s own notes say otherwise.',
+                '- The "Notable landmarks in view" list, if present, are prominent natural features (mountains, lakes) that were visible during the ride, not things directly on the route — phrase these as backdrop/scenery (e.g. "with X in view", "under X the whole way"), never as something you rode past or through.',
                 '- Never mention PRs, achievements, speed, or performance — no bragging.',
                 '- No calls to action, no hashtags, no emoji, no quotation marks.',
                 '- If the opener is two sentences, each sentence must add NEW information — a different place, feature, or detail. Never restate or rephrase the same landmark, road segment, or feature in both sentences.',
@@ -414,6 +448,9 @@ jobs:
               }
               if (poiNames.length) {
                 promptLines.push(`- Points of interest passed: ${poiNames.join('; ')}`);
+              }
+              if (landmarkNames.length) {
+                promptLines.push(`- Notable landmarks in view: ${landmarkNames.join('; ')}`);
               }
               if (riderNotes) {
                 promptLines.push(
