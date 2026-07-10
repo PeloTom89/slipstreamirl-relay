@@ -249,7 +249,6 @@ jobs:
           //     pipeline, whether that's a missing token, a private/streamless
           //     activity, or a Mapbox outage.
           let roadNames = [];
-          let poiNames = [];
           if (MAPBOX_TOKEN) {
             try {
               const streamRes = await fetch(
@@ -310,40 +309,9 @@ jobs:
                     .sort((a, b) => b[1] - a[1])
                     .slice(0, 8)
                     .map(([name]) => name);
-
-                  // Points of interest passed near, via Mapbox's Tilequery API. This is
-                  // a single-point lookup (no route-batching like Map Matching), so the
-                  // route is re-sampled much more sparsely — one query every ~1km rather
-                  // than the dense 25m trail — to keep the request count sane. A small
-                  // search radius (75m) keeps results to things actually near the road,
-                  // not just anywhere in the area.
-                  const MIN_GAP_POI_M = 1000;
-                  const poiSamples = [thinned[0]];
-                  for (let i = 1; i < thinned.length; i++) {
-                    if (haversineM(poiSamples[poiSamples.length - 1], thinned[i]) >= MIN_GAP_POI_M) poiSamples.push(thinned[i]);
-                  }
-                  const poiSeen = new Set();
-                  const poiOrdered = [];
-                  for (const [lat, lng] of poiSamples) {
-                    try {
-                      const tqUrl = `https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/tilequery/${lng},${lat}.json` +
-                        `?radius=75&limit=5&layers=poi_label&access_token=${encodeURIComponent(MAPBOX_TOKEN)}`;
-                      const tqRes = await fetch(tqUrl);
-                      if (!tqRes.ok) continue;
-                      const tqData = await tqRes.json();
-                      for (const feature of tqData.features || []) {
-                        const name = (feature.properties && feature.properties.name || '').trim();
-                        if (!name || poiSeen.has(name)) continue;
-                        poiSeen.add(name);
-                        poiOrdered.push(name);
-                      }
-                    } catch { /* skip this sample point, never fail the run over it */ }
-                  }
-                  poiNames = poiOrdered.slice(0, 10);
                 }
               }
               console.log(`Road matching: ${roadNames.length ? roadNames.join('; ') : '(no named roads matched)'}`);
-              console.log(`POI matching: ${poiNames.length ? poiNames.join('; ') : '(no points of interest matched)'}`);
             } catch (e) {
               console.log('Road-name map matching failed (non-fatal, falling back to segments only):', e.message);
             }
@@ -390,7 +358,6 @@ jobs:
                 '- Plain and factual. State what the route was — roads, terrain, landmarks — the way you\'d describe it to a friend, not narrate a feeling.',
                 '- The segment list below is Strava-defined ride efforts, ranked by rider popularity — NOT a list of road names. Only state one as the name of a road if it plausibly reads like one (e.g. "Moose-Wilson Rd"). Otherwise treat it as a landmark/feature reference, or leave it out rather than implying it was the road surface you rode on.',
                 '- The "Roads ridden" list, if present, IS real road names (matched from GPS, ranked by distance covered) — these you can state directly and confidently as the roads you were on, in roughly the order given.',
-                '- The "Points of interest passed" list, if present, are real named places near the route (parks, viewpoints, landmarks) — phrase these as things you rode near/past, not things you stopped at or rode on, unless the rider\'s own notes say otherwise.',
                 '- Never mention PRs, achievements, speed, or performance — no bragging.',
                 '- No calls to action, no hashtags, no emoji, no quotation marks.',
                 '- If the opener is two sentences, each sentence must add NEW information — a different place, feature, or detail. Never restate or rephrase the same landmark, road segment, or feature in both sentences.',
@@ -411,9 +378,6 @@ jobs:
               ];
               if (roadNames.length) {
                 promptLines.push(`- Roads ridden (most distance first): ${roadNames.join('; ')}`);
-              }
-              if (poiNames.length) {
-                promptLines.push(`- Points of interest passed: ${poiNames.join('; ')}`);
               }
               if (riderNotes) {
                 promptLines.push(
