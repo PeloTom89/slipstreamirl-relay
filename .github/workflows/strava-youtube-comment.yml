@@ -15,6 +15,21 @@ on:
         required: false
         default: ''
         type: string
+      activity_id_override:
+        description: 'Target this specific Strava activity id instead of your latest activity'
+        required: false
+        default: ''
+        type: string
+      title_override:
+        description: 'Apply this exact title verbatim (skips the Claude call) — for re-applying a title/opener you already reviewed via dry_run'
+        required: false
+        default: ''
+        type: string
+      opener_override:
+        description: 'Apply this exact opener verbatim (skips the Claude call) — replaces the description instead of appending to it'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -47,6 +62,9 @@ jobs:
           RIDE_SUMMARY_JSON:          ${{ steps.ride_summary.outputs.summary }}
           DRY_RUN:                    ${{ github.event.inputs.dry_run }}
           RIDER_NOTES_OVERRIDE:       ${{ github.event.inputs.rider_notes_override }}
+          ACTIVITY_ID_OVERRIDE:       ${{ github.event.inputs.activity_id_override }}
+          TITLE_OVERRIDE:             ${{ github.event.inputs.title_override }}
+          OPENER_OVERRIDE:            ${{ github.event.inputs.opener_override }}
           YOUTUBE_OAUTH_CLIENT_ID:     ${{ secrets.YOUTUBE_OAUTH_CLIENT_ID }}
           YOUTUBE_OAUTH_CLIENT_SECRET: ${{ secrets.YOUTUBE_OAUTH_CLIENT_SECRET }}
           YOUTUBE_OAUTH_REFRESH_TOKEN: ${{ secrets.YOUTUBE_OAUTH_REFRESH_TOKEN }}
@@ -65,6 +83,13 @@ jobs:
           // prompt/logic changes without spending a real post.
           const DRY_RUN = process.env.DRY_RUN === 'true';
           const RIDER_NOTES_OVERRIDE = (process.env.RIDER_NOTES_OVERRIDE || '').trim();
+          // Manual apply mode: re-apply an exact title/opener you already reviewed via a
+          // dry run, without letting Claude regenerate (possibly different) wording, and
+          // targeting a specific activity instead of whatever's currently "latest".
+          const ACTIVITY_ID_OVERRIDE = (process.env.ACTIVITY_ID_OVERRIDE || '').trim();
+          const TITLE_OVERRIDE = (process.env.TITLE_OVERRIDE || '').trim();
+          const OPENER_OVERRIDE = (process.env.OPENER_OVERRIDE || '').trim();
+          const MANUAL_APPLY = Boolean(TITLE_OVERRIDE && OPENER_OVERRIDE);
 
           function emitOutput(key, value) {
             if (process.env.GITHUB_OUTPUT) {
@@ -122,17 +147,20 @@ jobs:
             .replace(/&lt;/g, '<').replace(/&gt;/g, '>');
           const videoTitle = decodeEntities(video.snippet.title || '').trim();
 
-          // 3. Fetch latest Strava activity
+          // 3. Fetch the target Strava activity — a specific one if overridden
+          //    (manual re-apply), otherwise whatever's currently latest.
           const actRes = await fetch(
-            'https://www.strava.com/api/v3/athlete/activities?per_page=1',
+            ACTIVITY_ID_OVERRIDE
+              ? `https://www.strava.com/api/v3/activities/${ACTIVITY_ID_OVERRIDE}`
+              : 'https://www.strava.com/api/v3/athlete/activities?per_page=1',
             { headers: { Authorization: `Bearer ${access_token}` } }
           );
           if (!actRes.ok) {
             console.error(`Strava activities fetch failed (${actRes.status}):`, await actRes.text());
             process.exit(1);
           }
-          const activities = await actRes.json();
-          const activity = (activities || [])[0];
+          const actBody = await actRes.json();
+          const activity = ACTIVITY_ID_OVERRIDE ? actBody : (actBody || [])[0];
           if (!activity) {
             console.log('No Strava activity found — skipping.');
             process.exit(0);
@@ -141,7 +169,8 @@ jobs:
           const stravaActivityUrl = `https://www.strava.com/activities/${activity.id}`;
 
           // 4. Video must have been published after the activity started
-          if (videoPublished < actStart) {
+          //    (skipped for a manual apply — the activity/video pairing is explicit)
+          if (!MANUAL_APPLY && videoPublished < actStart) {
             console.log(
               `YouTube video (${new Date(videoPublished).toISOString()}) predates ` +
               `activity start (${activity.start_date}) — skipping.`
@@ -160,7 +189,7 @@ jobs:
           }
           const detail = await detRes.json();
           const description = detail.description || '';
-          if (!DRY_RUN && description.includes('youtube.com')) {
+          if (!DRY_RUN && !MANUAL_APPLY && description.includes('youtube.com')) {
             console.log('YouTube link already in activity description — skipping.');
             process.exit(0);
           }
@@ -184,10 +213,11 @@ jobs:
 
           // 6. Generate an understated title + plain, factual opener with Claude.
           //    Falls back to the existing title and the video title as the
-          //    opener if the key is missing or the call fails.
-          let title = null;
-          let hook = videoTitle;
-          if (CLAUDE_KEY) {
+          //    opener if the key is missing or the call fails. Manual apply skips
+          //    Claude entirely and uses the exact reviewed text instead.
+          let title = MANUAL_APPLY ? TITLE_OVERRIDE : null;
+          let hook = MANUAL_APPLY ? OPENER_OVERRIDE : videoTitle;
+          if (!MANUAL_APPLY && CLAUDE_KEY) {
             try {
               // Rank segments by Strava's own athlete_count (unique riders who've ever
               // done it) rather than just ride order — the well-known, widely-ridden
@@ -302,7 +332,10 @@ jobs:
           parts.push(statLine);
           parts.push(`Brought the camera along for this one 🎥\n${videoUrl}`);
           const block = parts.join('\n\n');
-          const newDescription = description ? `${description}\n\n${block}` : block;
+          // Manual apply replaces the whole description (it's re-doing an existing post,
+          // so appending on top of the old auto-generated text would just duplicate it);
+          // the normal flow appends onto whatever the rider already wrote, unchanged.
+          const newDescription = MANUAL_APPLY ? block : (description ? `${description}\n\n${block}` : block);
 
           if (DRY_RUN) {
             console.log('===== DRY RUN — nothing written to Strava or YouTube =====');
