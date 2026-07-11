@@ -366,6 +366,7 @@ jobs:
                 '- The segment list below is Strava-defined ride efforts, ranked by rider popularity — NOT a list of road names. Only state one as the name of a road if it plausibly reads like one (e.g. "Moose-Wilson Rd"). Otherwise treat it as a landmark/feature reference, or leave it out rather than implying it was the road surface you rode on.',
                 '- The "Roads ridden" list, if present, IS real road names (matched from GPS) — these you can state directly and confidently as the roads you were on, listed in the actual order they were ridden. Never reorder them or imply a different sequence than given.',
                 '- The road list is just an ORDER, not a shape — you don\'t know if the ride was a loop, an out-and-back, or point-to-point, only which road came after which. Never describe a route shape ("looped back on X", "circled around", "returned via X", "back down Y") — that asserts a geometric relationship between roads that isn\'t in the data. Just state the roads in the order given (e.g. "rode X, then Y, then Z") without claiming how they relate to each other spatially.',
+                '- You do NOT need to mention every road in the list. If the rider left notes, THEIR words and what they actually cared about are the priority — pick one or two roads that anchor the ride, don\'t spend the whole opener enumerating all of them at the expense of the rider\'s own voice.',
                 '- Never mention PRs, achievements, speed, or performance — no bragging.',
                 '- No calls to action, no hashtags, no emoji, no quotation marks.',
                 '- If the opener is two sentences, each sentence must add NEW information — a different place, feature, or detail. Never restate or rephrase the same landmark, road segment, or feature in both sentences.',
@@ -392,7 +393,7 @@ jobs:
               if (riderNotes) {
                 promptLines.push(
                   '',
-                  'The rider recorded these notes right after finishing (their own words, voice-to-text, may be informal or fragmented). Weave in specific, true details from these notes where natural, but keep following every style rule above (plain/factual, no metaphor, no personification, no repetition):',
+                  'The rider recorded these notes right after finishing (their own words, voice-to-text, may be informal or fragmented). These notes are the PRIMARY source for the opener — lead with what the rider actually said (including how they felt about the ride, plans, anything notable that happened), and use the road/segment data above as supporting detail woven in where it fits naturally, not as a checklist to complete. Don\'t let a full recitation of roads crowd out the rider\'s own words. Keep following every style rule above (plain/factual, no metaphor, no personification, no repetition, no invented specifics):',
                   `"""${riderNotes}"""`
                 );
               }
