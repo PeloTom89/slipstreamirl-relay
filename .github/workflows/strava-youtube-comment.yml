@@ -281,7 +281,7 @@ jobs:
                   const chunks = [];
                   for (let i = 0; i < thinned.length; i += CHUNK) chunks.push(thinned.slice(i, i + CHUNK));
 
-                  const namedDistances = new Map(); // road name -> total metres ridden on it
+                  const namedDistances = new Map(); // road name -> total metres ridden on it; Map preserves insertion order, which is ride order since chunks are processed sequentially
                   for (const chunk of chunks) {
                     if (chunk.length < 2) continue;
                     const coordStr = chunk.map(([lat, lng]) => `${lng},${lat}`).join(';');
@@ -305,10 +305,16 @@ jobs:
                       }
                     }
                   }
-                  roadNames = [...namedDistances.entries()]
-                    .sort((a, b) => b[1] - a[1])
-                    .slice(0, 8)
-                    .map(([name]) => name);
+                  // Select the top 8 roads by distance covered (so a minor service
+                  // road doesn't crowd out the ones that actually defined the ride),
+                  // but then output them in the order they were actually ridden --
+                  // NOT sorted by distance -- so the write-up doesn't misrepresent
+                  // which road came first (a road ridden last but for the longest
+                  // stretch would otherwise sort to the top of the list).
+                  const topByDistance = new Set(
+                    [...namedDistances.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name]) => name)
+                  );
+                  roadNames = [...namedDistances.keys()].filter((name) => topByDistance.has(name));
                 }
               }
               console.log(`Road matching: ${roadNames.length ? roadNames.join('; ') : '(no named roads matched)'}`);
@@ -357,7 +363,7 @@ jobs:
                 'Style rules (apply to both):',
                 '- Plain and factual. State what the route was — roads, terrain, landmarks — the way you\'d describe it to a friend, not narrate a feeling.',
                 '- The segment list below is Strava-defined ride efforts, ranked by rider popularity — NOT a list of road names. Only state one as the name of a road if it plausibly reads like one (e.g. "Moose-Wilson Rd"). Otherwise treat it as a landmark/feature reference, or leave it out rather than implying it was the road surface you rode on.',
-                '- The "Roads ridden" list, if present, IS real road names (matched from GPS, ranked by distance covered) — these you can state directly and confidently as the roads you were on, in roughly the order given.',
+                '- The "Roads ridden" list, if present, IS real road names (matched from GPS) — these you can state directly and confidently as the roads you were on, listed in the actual order they were ridden. Never reorder them or imply a different sequence than given.',
                 '- Never mention PRs, achievements, speed, or performance — no bragging.',
                 '- No calls to action, no hashtags, no emoji, no quotation marks.',
                 '- If the opener is two sentences, each sentence must add NEW information — a different place, feature, or detail. Never restate or rephrase the same landmark, road segment, or feature in both sentences.',
@@ -377,7 +383,7 @@ jobs:
                 `- Popular segments ridden (most riders first): ${segments.join('; ') || 'n/a'}`,
               ];
               if (roadNames.length) {
-                promptLines.push(`- Roads ridden (most distance first): ${roadNames.join('; ')}`);
+                promptLines.push(`- Roads ridden, in the order ridden: ${roadNames.join('; ')}`);
               }
               if (riderNotes) {
                 promptLines.push(
