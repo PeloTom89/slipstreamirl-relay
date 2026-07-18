@@ -9,8 +9,11 @@
     font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
   /* Bottom ticker strip. Works whether the OBS source is 1920x1080 or a thin
      1920x70 strip — it's pinned to the bottom either way. */
-  #ticker{position:fixed;left:0;bottom:0;width:100%;height:42px;overflow:hidden;
-    background:linear-gradient(0deg, rgba(0,0,0,.60), rgba(0,0,0,.20));}
+  #ticker{position:fixed;left:0;bottom:0;width:100%;height:42px;overflow:hidden;}
+  #backdrop{position:absolute;inset:0;
+    background:linear-gradient(0deg, rgba(0,0,0,.60), rgba(0,0,0,.20));
+    opacity:0;transition:opacity .35s ease;pointer-events:none}
+  #backdrop.on{opacity:1}
   .item{position:absolute;left:0;bottom:0;height:42px;display:flex;align-items:center;
     white-space:nowrap;font-size:20px;font-weight:600;color:#fff;
     text-shadow:0 2px 4px rgba(0,0,0,.85);will-change:transform}
@@ -22,7 +25,7 @@
 </style>
 </head>
 <body>
-  <div id="ticker"></div>
+  <div id="ticker"><div id="backdrop"></div></div>
   <div id="hint"></div>
   <script>
     /* ===== CONFIG ===== */
@@ -34,6 +37,7 @@
     /* ================== */
 
     const ticker = document.getElementById("ticker");
+    const backdrop = document.getElementById("backdrop");
     const hint = document.getElementById("hint");
     if (!channel) hint.textContent = "Add ?channel=YOUR_TWITCH_LOGIN to the URL";
 
@@ -76,7 +80,12 @@
        left at a constant speed. New messages spawn at the right edge, or just to
        the right of the previous one if it hasn't cleared yet (so they queue). === */
     const items = [];
-    let lastTs = null;
+
+    // Analytic position of an in-flight item — avoids reading layout (which
+    // forces a reflow) just to know where the previous message currently is.
+    function currentX(it, now) {
+      return it.startX - SPEED * ((now - it.startTime) / 1000);
+    }
 
     function addMessage(user, color, text, badges) {
       const el = document.createElement("div");
@@ -85,33 +94,36 @@
         `<span class="u" style="color:${color}">${esc(user)}</span><span class="m">${esc(text)}</span>`;
       ticker.appendChild(el);
       const w = el.offsetWidth;
+      const now = performance.now();
 
       let spawnX = ticker.clientWidth;
       if (items.length) {
         const last = items[items.length - 1];
-        spawnX = Math.max(spawnX, last.x + last.w + GAP);
+        spawnX = Math.max(spawnX, currentX(last, now) + last.w + GAP);
       }
       // Drop if the queue has grown too long (spam protection) so latency stays sane.
       if (spawnX > ticker.clientWidth * MAX_BACKLOG_FACTOR) { el.remove(); return; }
 
-      el.style.transform = `translate3d(${spawnX}px,0,0)`;
-      items.push({ el, x: spawnX, w });
-    }
+      const endX = -w;
+      // Web Animations API: the browser drives this on the compositor thread,
+      // so it stays smooth even if the main thread hitches (chat parsing, GC,
+      // new messages arriving) — unlike a per-frame JS transform update.
+      const anim = el.animate(
+        [{ transform: `translate3d(${spawnX}px,0,0)` }, { transform: `translate3d(${endX}px,0,0)` }],
+        { duration: (spawnX - endX) / SPEED * 1000, easing: "linear", fill: "forwards" }
+      );
 
-    function frame(t) {
-      requestAnimationFrame(frame);
-      if (lastTs == null) { lastTs = t; return; }
-      const dt = Math.min((t - lastTs) / 1000, 0.05); // clamp so a hitch doesn't jump
-      lastTs = t;
-      const dx = SPEED * dt;
-      for (let i = items.length - 1; i >= 0; i--) {
-        const it = items[i];
-        it.x -= dx;
-        it.el.style.transform = `translate3d(${it.x}px,0,0)`;
-        if (it.x + it.w < 0) { it.el.remove(); items.splice(i, 1); }
-      }
+      const record = { el, startX: spawnX, startTime: now, w };
+      items.push(record);
+      backdrop.classList.add("on");
+
+      anim.onfinish = () => {
+        el.remove();
+        const idx = items.indexOf(record);
+        if (idx !== -1) items.splice(idx, 1);
+        if (!items.length) backdrop.classList.remove("on");
+      };
     }
-    requestAnimationFrame(frame);
 
     /* ===== Twitch chat (anonymous read-only IRC over WebSocket) ===== */
     function connectIRC() {
