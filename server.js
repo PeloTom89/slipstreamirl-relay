@@ -427,8 +427,23 @@ const server = http.createServer((req, res) => {
     });
     return;
   }
-  res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("location relay up (broadcast delay " + delayMs + "ms, timer-sync)");
+  // Last-resort OAuth rescue. If a Twitch redirect URI is registered without the
+  // /app-redirect path, Twitch drops the browser here with the token in the
+  // fragment and the user is stranded on a status page holding valid credentials.
+  // The server can't see the fragment, so serve HTML that checks for it client-side:
+  // hand off to the app if it's an OAuth landing, otherwise show the status text.
+  res.writeHead(200, { "Content-Type": "text/html" });
+  res.end(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>location relay</title></head>
+<body style="background:#0a0b0d;color:#e8eaed;font-family:monospace;padding:16px">
+<pre id="s">location relay up (broadcast delay ${delayMs}ms, timer-sync)</pre>
+<script>
+  if (/access_token=|[?&]error=/.test(window.location.hash + window.location.search)) {
+    var target = "slipstreamirl://redirect" + (window.location.search || "") + (window.location.hash || "");
+    document.getElementById("s").textContent = "Returning to SlipstreamIRL…";
+    window.location.replace(target);
+  }
+</script>
+</body></html>`);
 });
 
 const wss = new WebSocketServer({ server });
