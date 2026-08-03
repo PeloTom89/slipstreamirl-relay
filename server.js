@@ -192,7 +192,11 @@ const server = http.createServer((req, res) => {
   // OAuth bounce for the native app. Twitch only allows https redirect URIs, so it
   // sends the token here in the URL #fragment; this page forwards it into the app via
   // its custom scheme. The fragment never reaches the server, so JS handles the hand-off.
-  if (req.method === "GET" && pathOnly === "/app-redirect") {
+  //
+  // Matched with the trailing slash stripped: Twitch sends the browser to
+  // /app-redirect/, not /app-redirect. An exact match fell through to the status
+  // page below, stranding the user there holding a valid token.
+  if (req.method === "GET" && pathOnly.replace(/\/+$/, "") === "/app-redirect") {
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Returning…</title></head>
 <body style="background:#0a0b0d;color:#e8eaed;font-family:sans-serif;text-align:center;padding-top:80px">
