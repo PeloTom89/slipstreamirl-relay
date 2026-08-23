@@ -9,14 +9,6 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## Near-term
 
-- [ ] **Normalize duplicate road names in Mapbox matching** — the same physical
-      road can come back as two entries (e.g. "Moose-Wilson Road" and "Moose-Wilson
-      Road (WY 390)") when Mapbox tags different stretches with slightly different
-      strings, splitting the distance credit and eating two of the top-8 slots.
-      Strip parenthetical highway suffixes before de-duping.
-- [ ] **Remove the dead `/tiles/{z}/{x}/{y}.png` proxy** — leftover from the
-      pre-MapLibre raster era; nothing references it anymore since the extension
-      and overlays fetch OpenFreeMap's vector tiles directly.
 - [ ] **Tune effort-zone band cutoffs** — multipliers in `karoo.html` (`zoneIndex`).
 - [ ] **Wind: expose an mph option** at the source calculation, not just display.
 - [ ] **Health/status page** showing connected overlays + last fix age.
@@ -57,6 +49,25 @@ auto-provisioning, distribution, privacy policy, phasing).
 
 ## Done (recent)
 
+- [x] **Removed the dead `/tiles/{z}/{x}/{y}.png` proxy** — confirmed nothing
+      calls it: grepped this repo plus the sibling `slipstreamirl-extension`
+      and `slipstreamirl-app` repos, and `/overlay-raster` (`overlay.html`)
+      fetches OpenStreetMap tiles directly rather than through this proxy. The
+      extension's `overlay.js` had a stray comment referencing a relay tile
+      proxy, but its actual code fetches OpenFreeMap vector tiles directly —
+      the comment was already stale, not a live dependency.
+- [x] **Normalize duplicate road names in Mapbox matching** — the same physical
+      road could come back as two entries (e.g. "Moose-Wilson Road" and
+      "Moose-Wilson Road (WY 390)") when Mapbox tagged different stretches with
+      slightly different strings, splitting the distance credit and eating two
+      of the top-8 slots. `tools/road-names.mjs` strips a trailing
+      highway/route parenthetical for grouping only (the reader still sees the
+      clean, shorter variant), sums distance across merged variants, and keeps
+      the top-8 selection in ride order. Deliberately conservative: a
+      parenthetical with no route-like digits, or names that merely share a
+      prefix with no parenthetical at all (e.g. "Main Street" vs "Main Street
+      North"), are left as separate roads rather than risk a wrong merge. See
+      `tools/road-names.test.mjs` (`npm test`).
 - [x] **MapLibre vector map migration** — `/overlay` now serves the vector map
       (`overlay-gl.html`, OpenFreeMap tiles); street/landmark labels stay upright
       through course-up rotation, unlike the old raster tiles. Raster kept as a

@@ -207,30 +207,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Map tile proxy for the Twitch extension. Twitch's CSP blocks loading tile
-  // images directly from openstreetmap.org, so the extension requests them from
-  // this relay (its one allowlisted domain) and we fetch them server-side.
-  //   GET /tiles/{z}/{x}/{y}.png
-  {
-    const m = pathOnly.match(/^\/tiles\/(\d+)\/(\d+)\/(\d+)\.png$/);
-    if (req.method === "GET" && m) {
-      const [, z, x, y] = m;
-      fetch(`https://tile.openstreetmap.org/${z}/${x}/${y}.png`, {
-        headers: { "User-Agent": "SlipstreamIRL/1.0 (relay tile proxy)" },
-      }).then(async (r) => {
-        if (!r.ok) { res.writeHead(r.status); res.end(); return; }
-        const buf = Buffer.from(await r.arrayBuffer());
-        res.writeHead(200, {
-          "Content-Type": "image/png",
-          "Cache-Control": "public, max-age=86400",
-          "Access-Control-Allow-Origin": "*",
-        });
-        res.end(buf);
-      }).catch(() => { res.writeHead(502); res.end(); });
-      return;
-    }
-  }
-
   // Health / token check — used by the app's "Test connection" button.
   //   GET /health?token=RELAY_TOKEN  -> 200 "ok" if token matches, else 403.
   if (req.method === "GET" && pathOnly === "/health") {

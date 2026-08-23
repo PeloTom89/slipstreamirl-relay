@@ -78,6 +78,7 @@ jobs:
         run: |
           node --input-type=module <<'EOF'
           import fs from 'node:fs';
+          import { aggregateRoadNames, topRoadNamesInRideOrder } from './tools/road-names.mjs';
 
           const YT_KEY     = process.env.YOUTUBE_API_KEY;
           const YT_CHANNEL = process.env.YOUTUBE_CHANNEL_ID;
@@ -281,7 +282,7 @@ jobs:
                   const chunks = [];
                   for (let i = 0; i < thinned.length; i += CHUNK) chunks.push(thinned.slice(i, i + CHUNK));
 
-                  const namedDistances = new Map(); // road name -> total metres ridden on it; Map preserves insertion order, which is ride order since chunks are processed sequentially
+                  const roadSteps = []; // { name, distance } per matched step, in ride order (chunks are processed sequentially)
                   for (const chunk of chunks) {
                     if (chunk.length < 2) continue;
                     const coordStr = chunk.map(([lat, lng]) => `${lng},${lat}`).join(';');
@@ -301,20 +302,20 @@ jobs:
                       for (const step of leg.steps || []) {
                         const name = (step.name || '').trim();
                         if (!name) continue;
-                        namedDistances.set(name, (namedDistances.get(name) || 0) + (step.distance || 0));
+                        roadSteps.push({ name, distance: step.distance || 0 });
                       }
                     }
                   }
-                  // Select the top 8 roads by distance covered (so a minor service
-                  // road doesn't crowd out the ones that actually defined the ride),
-                  // but then output them in the order they were actually ridden --
-                  // NOT sorted by distance -- so the write-up doesn't misrepresent
-                  // which road came first (a road ridden last but for the longest
-                  // stretch would otherwise sort to the top of the list).
-                  const topByDistance = new Set(
-                    [...namedDistances.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name]) => name)
-                  );
-                  roadNames = [...namedDistances.keys()].filter((name) => topByDistance.has(name));
+                  // Group steps into roads (merging spelling variants of the same
+                  // road, e.g. a trailing "(WY 390)" highway suffix, and summing
+                  // their distance — see tools/road-names.mjs), then select the top
+                  // 8 by distance covered (so a minor service road doesn't crowd out
+                  // the ones that actually defined the ride), output in the order
+                  // actually ridden -- NOT sorted by distance -- so the write-up
+                  // doesn't misrepresent which road came first (a road ridden last
+                  // but for the longest stretch would otherwise sort to the top).
+                  const roadGroups = aggregateRoadNames(roadSteps);
+                  roadNames = topRoadNamesInRideOrder(roadGroups, 8);
                 }
               }
               console.log(`Road matching: ${roadNames.length ? roadNames.join('; ') : '(no named roads matched)'}`);

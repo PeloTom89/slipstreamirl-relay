@@ -42,6 +42,7 @@ your OBS browser source. No RTIRL, no third-party location service.
 | `chat.html` | `/chat` | Twitch chat ticker |
 | `ext/` | `/ext/*` | static copy of the Twitch Extension bundle (MapLibre `video_overlay.html` + `overlay.js`), served for the app's in-app Extension preview |
 | `tools/simulate-gpx.mjs` | — | dev tool: replay a GPX route into the relay without actually riding |
+| `tools/road-names.mjs` | — | groups Mapbox map-matching step names into de-duped, ranked roads for the workflow below (`npm test`) |
 | `.github/workflows/strava-youtube-comment.yml` | — | scheduled job, see **Strava/YouTube auto-post** below |
 | `render.yaml` | — | Render Blueprint (auto-provisions the service + token) |
 
@@ -49,10 +50,6 @@ Endpoints: `POST /push` (sender), `GET /health` (token check), `GET /badges`
 (chat badges), `GET /app-redirect` (Twitch OAuth bounce), `POST /ai/twitch-title`
 (Claude ride-plan → title), `POST /ride-summary` (parks a dictated post-ride
 summary for the workflow below), WebSocket `?role=overlay|sender`.
-
-`GET /tiles/{z}/{x}/{y}.png` also still exists (a raster-tile proxy from before the
-MapLibre migration) but nothing references it anymore — dead code, kept around
-rather than risk breaking something; see `ROADMAP.md`.
 
 ## Overlay features
 
