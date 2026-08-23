@@ -4,7 +4,8 @@
   "description": "Location relay + control app + OBS overlay, one Render web service.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test tools/*.test.mjs"
   },
   "engines": {
     "node": ">=18"
