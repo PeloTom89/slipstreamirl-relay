@@ -335,21 +335,21 @@ describe("multi-tenant mode (MULTI_TENANT=1)", () => {
     return Number(text.match(/multi-tenant, (\d+) channel/)[1]);
   }
 
-  test("overlay WS to a never-pushed channel does not persist a channel entry", async () => {
+  test("overlay WS to a never-pushed channel is closed, and does not persist a channel entry", async () => {
     const channel = "peek-only-channel";
     const beforeCount = await channelCount();
 
-    const overlay = await openOverlay(server.baseWs, channel);
-    await new Promise((r) => setTimeout(r, LEAK_GRACE_MS));
-    assert.equal(await channelCount(), beforeCount, "overlay-only connection grew the channels map");
-    overlay.ws.close();
+    const ws = new WebSocket(server.baseWs + "/?role=overlay&channel=" + encodeURIComponent(channel));
+    const { code } = await waitForClose(ws);
+    assert.equal(code, 1008);
+    assert.equal(await channelCount(), beforeCount, "rejected overlay connection grew the channels map");
 
     const res = await push(channel, { lat: 5, lng: 6 });
     assert.equal(res.status, 200);
-    assert.equal(await channelCount(), beforeCount + 1, "push after the overlay-only connection should be what first persists the channel");
+    assert.equal(await channelCount(), beforeCount + 1, "push after the rejected overlay connection should be what first persists the channel");
   });
 
-  test("late-joining overlay still replays cached state for a channel that was already pushed to", async () => {
+  test("overlay WS reconnecting after a channel's first push joins the real, broadcasting channel", async () => {
     const channel = "peek-existing-channel";
     await zeroDelay(channel);
     await push(channel, { lat: 30, lng: 40 });
@@ -357,6 +357,11 @@ describe("multi-tenant mode (MULTI_TENANT=1)", () => {
 
     const late = await openOverlay(server.baseWs, channel);
     await waitFor(() => late.messages.some((m) => m.lat === 30 && m.lng === 40));
+
+    const res = await push(channel, { lat: 31, lng: 41 });
+    assert.equal(res.status, 200);
+    await waitFor(() => late.messages.some((m) => m.lat === 31 && m.lng === 41));
+
     late.ws.close();
   });
 
