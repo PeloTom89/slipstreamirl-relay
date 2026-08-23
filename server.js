@@ -491,6 +491,14 @@ function getChannel(id) {
   return ch;
 }
 
+// Read-only counterpart to getChannel(): returns the channel's state bundle
+// if one exists, otherwise an unpersisted fresh bundle without inserting into
+// `channels`. Used by the public, tokenless overlay WS path so connecting to
+// an id nobody has pushed to yet can't grow the Map unboundedly.
+function peekChannel(id) {
+  return channels.get(id) || freshChannelState();
+}
+
 // The one channel single-tenant mode ever uses — created eagerly so it exists
 // from boot, same as the old module-level globals did.
 const defaultChannel = !MULTI_TENANT ? getChannel(DEFAULT_CHANNEL_ID) : null;
@@ -516,7 +524,7 @@ wss.on("connection", (ws, req) => {
     if (MULTI_TENANT) {
       const channelId = channelIdFromRequest(url);
       if (!channelId) { ws.close(1008, "channel required"); return; }
-      channel = getChannel(channelId);
+      channel = peekChannel(channelId);
     } else {
       channel = defaultChannel;
     }

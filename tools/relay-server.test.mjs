@@ -330,6 +330,36 @@ describe("multi-tenant mode (MULTI_TENANT=1)", () => {
     b.ws.close();
   });
 
+  async function channelCount() {
+    const text = await fetch(`${server.baseHttp}/`).then((r) => r.text());
+    return Number(text.match(/multi-tenant, (\d+) channel/)[1]);
+  }
+
+  test("overlay WS to a never-pushed channel does not persist a channel entry", async () => {
+    const channel = "peek-only-channel";
+    const beforeCount = await channelCount();
+
+    const overlay = await openOverlay(server.baseWs, channel);
+    await new Promise((r) => setTimeout(r, LEAK_GRACE_MS));
+    assert.equal(await channelCount(), beforeCount, "overlay-only connection grew the channels map");
+    overlay.ws.close();
+
+    const res = await push(channel, { lat: 5, lng: 6 });
+    assert.equal(res.status, 200);
+    assert.equal(await channelCount(), beforeCount + 1, "push after the overlay-only connection should be what first persists the channel");
+  });
+
+  test("late-joining overlay still replays cached state for a channel that was already pushed to", async () => {
+    const channel = "peek-existing-channel";
+    await zeroDelay(channel);
+    await push(channel, { lat: 30, lng: 40 });
+    await new Promise((r) => setTimeout(r, 100));
+
+    const late = await openOverlay(server.baseWs, channel);
+    await waitFor(() => late.messages.some((m) => m.lat === 30 && m.lng === 40));
+    late.ws.close();
+  });
+
   test("/health is channel-scoped: a token only validates for its own channel", async () => {
     const token = tokenFor("health-channel");
     const ok = await fetch(`${server.baseHttp}/health?channel=health-channel&token=${encodeURIComponent(token)}`);
