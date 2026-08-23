@@ -6,6 +6,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Tests: `npm test` runs Node's built-in test runner (`node --test tools/*.test.mjs`) —
   no external test framework is installed. Put unit-testable logic under `tools/*.mjs`
   with a matching `tools/*.test.mjs`.
+- `.github/workflows/test.yml` runs `npm test` on every PR and on push to `main`,
+  pinned to Node 24 (current Active LTS as of this writing) via `actions/setup-node@v5`.
+  `package-lock.json` is gitignored, so it uses `npm install`, not `npm ci`.
 - `.github/workflows/strava-youtube-comment.yml` has no companion `.js`/`.mjs` file —
   its logic is a `node --input-type=module <<'EOF' ... EOF` heredoc inline in the YAML
   `run:` step. GitHub Actions `run:` steps execute with cwd = the checked-out repo root,
