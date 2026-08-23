@@ -12,6 +12,15 @@
 //                which is the single-tenant behaviour above, unchanged.
 //   RELAY_JWT_SECRET  required when MULTI_TENANT is on; signs/verifies the
 //                per-channel push tokens (see tools/channel-token.js).
+//   STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET  optional, multi-tenant mode
+//                only; enable Stripe-backed entitlement gating on channel
+//                token issuance (see tools/stripe-entitlement.js and
+//                README.md "Stripe entitlement"). Unset by default — token
+//                issuance stays manual (tools/mint-channel-token.js) until
+//                both are set.
+//   ENTITLEMENT_GRACE_SECONDS  optional; grace period after a lapsed/failed
+//                subscription before token renewal is refused. Defaults to
+//                3 days — the captain's call to confirm, see README.md.
 //
 // Multi-tenant mode (MULTI_TENANT=1): the relay hosts many streamers' rooms
 // instead of one. State, rooms, and push auth all become per-channel, keyed by
@@ -24,7 +33,13 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { WebSocketServer } = require("ws");
-const { verifyChannelToken } = require("./tools/channel-token.js");
+const { signChannelToken, verifyChannelToken } = require("./tools/channel-token.js");
+const {
+  parseStripeEvent,
+  createEntitlementStore,
+  createStripeReconciler,
+  createCustomerMetadataFetcher,
+} = require("./tools/stripe-entitlement.js");
 
 const PORT = process.env.PORT || 8080;
 const TOKEN = process.env.RELAY_TOKEN || "change-me";
@@ -35,6 +50,35 @@ if (MULTI_TENANT && !JWT_SECRET) {
   process.exit(1);
 }
 const CLIENT_ID = process.env.TWITCH_CLIENT_ID || ""; // login app (public) — user OAuth
+// Overridable only for tests (a local stub server) — production always talks
+// to real Twitch. Not a captain-facing config option.
+const TWITCH_HELIX_BASE = process.env.TWITCH_HELIX_BASE || "https://api.twitch.tv/helix";
+
+// Stripe entitlement (multi-tenant mode only) — see README.md "Stripe
+// entitlement" for the full design and what the captain must configure in
+// Stripe. Both vars are required to enable it; either alone is a
+// misconfiguration, not a partial feature.
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
+// Default grace period on a lapsed/failed subscription: 3 days. This is a
+// product/support-burden call the captain hasn't made yet — see README. Err
+// generous: a false allow costs a few days of service, a false deny costs a
+// customer's stream.
+const ENTITLEMENT_GRACE_SECONDS = Number(process.env.ENTITLEMENT_GRACE_SECONDS) || 3 * 24 * 60 * 60;
+// Overridable only for tests (a local stub server) — production always talks
+// to real Stripe.
+const STRIPE_API_BASE = process.env.STRIPE_API_BASE || "https://api.stripe.com/v1";
+if (MULTI_TENANT && (STRIPE_SECRET_KEY || STRIPE_WEBHOOK_SECRET) && !(STRIPE_SECRET_KEY && STRIPE_WEBHOOK_SECRET)) {
+  console.error("STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET must both be set to enable entitlement — leaving it disabled.");
+}
+const entitlementStore = (MULTI_TENANT && STRIPE_SECRET_KEY && STRIPE_WEBHOOK_SECRET)
+  ? createEntitlementStore({
+      graceMs: ENTITLEMENT_GRACE_SECONDS * 1000,
+      fetchCustomerMetadata: createCustomerMetadataFetcher({ secretKey: STRIPE_SECRET_KEY, apiBase: STRIPE_API_BASE }),
+      reconcile: createStripeReconciler({ secretKey: STRIPE_SECRET_KEY, apiBase: STRIPE_API_BASE }),
+    })
+  : null;
+
 // Badge lookups use a Twitch app token (client credentials), which requires a
 // CONFIDENTIAL app. The public login app can't have a secret, so this is a
 // separate app: its Client ID + Secret below. Falls back to the login app's ID.
@@ -200,6 +244,22 @@ async function fetchBadges(roomId) {
   return map;
 }
 
+// Verifies a Twitch user access token is real and returns the authoritative
+// Twitch user id it belongs to (or null) — proves a /channel-token caller is
+// who they claim without the relay running its own OAuth dance. Unlike
+// getAppToken()/fetchBadges() above (an app token), this uses the caller's
+// own user token, which is exactly what Helix requires to answer "who is
+// this" rather than "give me public data about broadcaster X".
+async function verifyTwitchUser(accessToken) {
+  const r = await fetch(TWITCH_HELIX_BASE + "/users", {
+    headers: { Authorization: "Bearer " + accessToken, "Client-Id": CLIENT_ID },
+  });
+  if (!r.ok) return null;
+  const j = await r.json();
+  const id = j.data && j.data[0] && j.data[0].id;
+  return typeof id === "string" && id ? id : null;
+}
+
 const server = http.createServer((req, res) => {
   const pathOnly = req.url.split("?")[0];
 
@@ -269,6 +329,72 @@ const server = http.createServer((req, res) => {
     };
     if (!CLIENT_SECRET) { done({}); return; }
     fetchBadges(room).then(done).catch(() => done({}));
+    return;
+  }
+
+  // Stripe webhook — see README.md "Stripe entitlement" for what the captain
+  // registers this URL as, and tools/stripe-entitlement.js for the design.
+  // Multi-tenant mode only, and only once STRIPE_SECRET_KEY +
+  // STRIPE_WEBHOOK_SECRET are both set. The signature is verified BEFORE the
+  // body is trusted at all — an unverified endpoint would let anyone grant
+  // themselves paid access by posting a fake event.
+  //   POST /stripe-webhook   headers: Stripe-Signature: t=...,v1=...
+  if (req.method === "POST" && pathOnly === "/stripe-webhook") {
+    if (!MULTI_TENANT) { res.writeHead(404); res.end(); return; }
+    if (!entitlementStore) { res.writeHead(503); res.end("entitlement not configured"); return; }
+    const chunks = [];
+    let tooBig = false;
+    req.on("data", (c) => {
+      chunks.push(c);
+      if (!tooBig && chunks.reduce((n, x) => n + x.length, 0) > 5e5) { tooBig = true; req.destroy(); }
+    });
+    req.on("end", async () => {
+      if (tooBig) return;
+      const raw = Buffer.concat(chunks).toString("utf8");
+      const sigHeader = req.headers["stripe-signature"] || "";
+      const event = parseStripeEvent(raw, sigHeader, STRIPE_WEBHOOK_SECRET);
+      if (!event) { res.writeHead(400); res.end("bad signature"); return; }
+      try { await entitlementStore.applyStripeEvent(event); } catch { /* logged nowhere yet; drop and let reconciliation self-heal */ }
+      res.writeHead(200); res.end("ok");
+    });
+    return;
+  }
+
+  // Channel push-token issuance, gated on Stripe entitlement. Multi-tenant
+  // mode only. Never a live per-push billing check — see README.md "Stripe
+  // entitlement" — this is called on renewal (expected ~daily per streamer),
+  // never on the hot GPS-push path.
+  //   POST /channel-token   body: {"twitchAccessToken":"..."}
+  //   -> 200 {"channel":"<twitch id>","token":"<channel JWT>"}
+  //   -> 401 identity couldn't be verified, 403 not entitled,
+  //      503 entitlement not configured (fall back to tools/mint-channel-token.js)
+  if (req.method === "POST" && pathOnly === "/channel-token") {
+    if (!MULTI_TENANT) { res.writeHead(404); res.end(); return; }
+    if (!entitlementStore) {
+      res.writeHead(503, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "entitlement not configured" }));
+      return;
+    }
+    let body = "";
+    req.on("data", (c) => { body += c; if (body.length > 4000) req.destroy(); });
+    req.on("end", async () => {
+      const done = (status, obj) => {
+        res.writeHead(status, { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" });
+        res.end(JSON.stringify(obj));
+      };
+      let twitchAccessToken;
+      try { ({ twitchAccessToken } = JSON.parse(body)); } catch { return done(400, { error: "bad json" }); }
+      if (!twitchAccessToken || typeof twitchAccessToken !== "string") {
+        return done(400, { error: "twitchAccessToken required" });
+      }
+      const channelId = await verifyTwitchUser(twitchAccessToken).catch(() => null);
+      if (!channelId) return done(401, { error: "could not verify Twitch identity" });
+      let entitled;
+      try { entitled = await entitlementStore.isEntitled(channelId); }
+      catch { return done(503, { error: "entitlement check unavailable" }); }
+      if (!entitled) return done(403, { error: "not entitled" });
+      done(200, { channel: channelId, token: signChannelToken(channelId, JWT_SECRET) });
+    });
     return;
   }
 
