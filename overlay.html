@@ -72,6 +72,9 @@
     let windEnabled = params.get("wind") !== "off";
     // Breadcrumb trail on by default; ?trail=off hides it.
     let trailOn = params.get("trail") !== "off";
+    // Multi-tenant mode: which channel's room to join. Empty/absent in
+    // single-tenant deployments, where the relay ignores this param anyway.
+    const CHANNEL = (params.get("channel") || "").trim();
 
     const map = L.map("map", { zoomControl:false, attributionControl:false }).setView([0,0], ZOOM);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -347,7 +350,7 @@
     let lastWindFetch = 0;
 
     function connect() {
-      const ws = new WebSocket(RELAY_URL + "?role=overlay");
+      const ws = new WebSocket(RELAY_URL + "?role=overlay" + (CHANNEL ? "&channel=" + encodeURIComponent(CHANNEL) : ""));
       ws.onmessage = (e) => {
         try {
           const d = JSON.parse(e.data);

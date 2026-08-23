@@ -46,6 +46,9 @@
     if (params.get("embed")) document.documentElement.classList.add("embed");
     let northUp = params.get("north") === "1";   // default course-up; ?north=1 keeps north up
     let trailOn = params.get("trail") !== "off";
+    // Multi-tenant mode: which channel's room to join. Empty/absent in
+    // single-tenant deployments, where the relay ignores this param anyway.
+    const CHANNEL = (params.get("channel") || "").trim();
 
     // MapLibre uses [lng,lat]. OpenFreeMap = free vector tiles, no key.
     const map = new maplibregl.Map({
@@ -213,7 +216,7 @@
     });
 
     function connect() {
-      const ws = new WebSocket(RELAY_URL + "?role=overlay");
+      const ws = new WebSocket(RELAY_URL + "?role=overlay" + (CHANNEL ? "&channel=" + encodeURIComponent(CHANNEL) : ""));
       ws.onmessage = (e) => {
         try {
           const d = JSON.parse(e.data);

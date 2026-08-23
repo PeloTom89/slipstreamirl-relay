@@ -8,14 +8,32 @@
 // Env vars:
 //   PORT         (set automatically by most hosts; defaults to 8080)
 //   RELAY_TOKEN  shared secret the SENDER must present; overlays are read-only
+//   MULTI_TENANT opt-in multi-tenant mode (see below) — unset/falsy by default,
+//                which is the single-tenant behaviour above, unchanged.
+//   RELAY_JWT_SECRET  required when MULTI_TENANT is on; signs/verifies the
+//                per-channel push tokens (see tools/channel-token.js).
+//
+// Multi-tenant mode (MULTI_TENANT=1): the relay hosts many streamers' rooms
+// instead of one. State, rooms, and push auth all become per-channel, keyed by
+// `?channel=<id>` (the streamer's Twitch user id) — see README.md and
+// ROADMAP.md for the full contract. Off by default so a bare `RELAY_TOKEN`
+// deploy (every free/BYO relay, and the captain's own deployment unless it
+// opts in) behaves exactly as it always has.
 
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const { WebSocketServer } = require("ws");
+const { verifyChannelToken } = require("./tools/channel-token.js");
 
 const PORT = process.env.PORT || 8080;
 const TOKEN = process.env.RELAY_TOKEN || "change-me";
+const MULTI_TENANT = /^(1|true|yes)$/i.test(process.env.MULTI_TENANT || "");
+const JWT_SECRET = process.env.RELAY_JWT_SECRET || "";
+if (MULTI_TENANT && !JWT_SECRET) {
+  console.error("MULTI_TENANT=1 requires RELAY_JWT_SECRET to be set — refusing to start.");
+  process.exit(1);
+}
 const CLIENT_ID = process.env.TWITCH_CLIENT_ID || ""; // login app (public) — user OAuth
 // Badge lookups use a Twitch app token (client credentials), which requires a
 // CONFIDENTIAL app. The public login app can't have a secret, so this is a
@@ -59,19 +77,26 @@ const PAGES = {
   "/karoo": "karoo.html",
 };
 
-function broadcast(loc) {
+// broadcast()/emit() take an explicit `channel` state bundle (see getChannel()
+// below) rather than closing over module-level state — this is the one thing
+// this codebase has already gotten wrong once (README.md/ROADMAP.md: "Any new
+// keyless message must be allowed in both /push validation and broadcast(),
+// or it's silently dropped"). In single-tenant mode `channel` is always the
+// one `defaultChannel` bundle, which is what makes that mode's behaviour
+// identical to before this function took a channel argument at all.
+function broadcast(channel, loc) {
   // Broadcast-delay config from the app: {delay:<seconds>}. Apply it immediately
   // (the config message itself is never delayed) and don't forward it to overlays.
   if (typeof loc.delay === "number") {
-    delayMs = Math.max(0, Math.min(30000, Math.round(loc.delay * 1000)));
+    channel.delayMs = Math.max(0, Math.min(30000, Math.round(loc.delay * 1000)));
     return;
   }
   // Hold every overlay-bound message for delayMs so the data lines up with the
   // latency-delayed Twitch video. Cache state is mutated inside emit() (i.e. at
   // send time, post-delay), so a freshly-connected overlay snaps to whatever the
   // other overlays are currently showing rather than to the un-delayed "now".
-  if (delayMs > 0) setTimeout(() => emit(loc), delayMs);
-  else emit(loc);
+  if (channel.delayMs > 0) setTimeout(() => emit(channel, loc), channel.delayMs);
+  else emit(channel, loc);
 }
 
 // Approx distance in metres between two [lat,lng] points (for breadcrumb decimation).
@@ -83,58 +108,58 @@ function distM(a, b) {
   return Math.sqrt(dLat * dLat + x * x) * R;
 }
 
-function emit(loc) {
+function emit(channel, loc) {
   let payload;
   if (loc.offline) {
     // Stream stopped — clear the cached position, ride start and breadcrumb path so
     // new overlays start fresh.
-    lastLocation = null;
-    lastLiveStart = null;
-    lastRadar = null;
-    lastPath = [];
+    channel.lastLocation = null;
+    channel.lastLiveStart = null;
+    channel.lastRadar = null;
+    channel.lastPath = [];
     payload = JSON.stringify({ offline: true, ts: Date.now() });
   } else if (Array.isArray(loc.radar)) {
     // Garmin Varia radar targets [{speed,dist,threat}] — cache the latest frame for
     // late overlays (an empty array clears the strip when the road is clear).
-    lastRadar = loc.radar;
+    channel.lastRadar = loc.radar;
     payload = JSON.stringify({ radar: loc.radar, ts: Date.now() });
   } else if (typeof loc.liveStart === "number") {
     // Go-live timestamp (epoch ms) — cache so the elapsed timer is anchored to when
     // the rider actually went live, surviving overlay refreshes and late joins.
-    lastLiveStart = loc.liveStart || null;
-    payload = JSON.stringify({ liveStart: lastLiveStart, ts: Date.now() });
+    channel.lastLiveStart = loc.liveStart || null;
+    payload = JSON.stringify({ liveStart: channel.lastLiveStart, ts: Date.now() });
   } else if (typeof loc.wind === "boolean") {
     // Wind on/off toggle — remember it so freshly-opened overlays sync.
-    lastWind = loc.wind;
+    channel.lastWind = loc.wind;
     payload = JSON.stringify({ wind: loc.wind, ts: Date.now() });
   } else if (typeof loc.units === "string") {
     // Units preference (imperial/metric) — remember for late-joining overlays.
-    lastUnits = loc.units;
+    channel.lastUnits = loc.units;
     payload = JSON.stringify({ units: loc.units, ts: Date.now() });
   } else if ("power" in loc || "cadence" in loc || "hr" in loc) {
     // BLE sensor values (power/cadence/heart rate) — cache for late overlays.
-    lastSensors = { power: loc.power ?? null, cadence: loc.cadence ?? null, hr: loc.hr ?? null };
-    payload = JSON.stringify({ ...lastSensors, ts: Date.now() });
+    channel.lastSensors = { power: loc.power ?? null, cadence: loc.cadence ?? null, hr: loc.hr ?? null };
+    payload = JSON.stringify({ ...channel.lastSensors, ts: Date.now() });
   } else if (loc.zones) {
     // Effort-zone anchors (FTP/LTHR/cadence/speed) — cache for late overlays.
-    lastZones = loc.zones;
+    channel.lastZones = loc.zones;
     payload = JSON.stringify({ zones: loc.zones, ts: Date.now() });
   } else if (loc.hidden) {
-    lastLocation = { hidden: true, ts: Date.now() };
-    payload = JSON.stringify(lastLocation);
+    channel.lastLocation = { hidden: true, ts: Date.now() };
+    payload = JSON.stringify(channel.lastLocation);
   } else {
-    lastLocation = { lat: loc.lat, lng: loc.lng, acc: loc.acc ?? null, hdg: loc.hdg ?? null,
+    channel.lastLocation = { lat: loc.lat, lng: loc.lng, acc: loc.acc ?? null, hdg: loc.hdg ?? null,
         spd: loc.spd ?? null, dist: loc.dist ?? null, ts: Date.now() };
     // Append to the breadcrumb path (decimated) so late-joining overlays get the
     // whole route, not just the part since they connected.
     const pt = [loc.lat, loc.lng];
-    if (!lastPath.length || distM(lastPath[lastPath.length - 1], pt) >= TRAIL_MIN_M) {
-      lastPath.push(pt);
-      if (lastPath.length > TRAIL_MAX) lastPath.shift();
+    if (!channel.lastPath.length || distM(channel.lastPath[channel.lastPath.length - 1], pt) >= TRAIL_MIN_M) {
+      channel.lastPath.push(pt);
+      if (channel.lastPath.length > TRAIL_MAX) channel.lastPath.shift();
     }
-    payload = JSON.stringify(lastLocation);
+    payload = JSON.stringify(channel.lastLocation);
   }
-  for (const o of overlays) if (o.readyState === o.OPEN) o.send(payload, () => {});
+  for (const o of channel.overlays) if (o.readyState === o.OPEN) o.send(payload, () => {});
 }
 
 // ---- Twitch chat badges (proxied via an app access token) ----
@@ -209,8 +234,22 @@ const server = http.createServer((req, res) => {
 
   // Health / token check — used by the app's "Test connection" button.
   //   GET /health?token=RELAY_TOKEN  -> 200 "ok" if token matches, else 403.
+  //   Multi-tenant mode: GET /health?channel=<id>&token=<channel JWT>.
   if (req.method === "GET" && pathOnly === "/health") {
-    const token = new URL(req.url, "http://x").searchParams.get("token");
+    const url = new URL(req.url, "http://x");
+    if (MULTI_TENANT) {
+      const channelId = channelIdFromRequest(url);
+      const token = url.searchParams.get("token");
+      const claims = channelId ? verifyChannelToken(token, JWT_SECRET) : null;
+      const ok = !!claims && claims.channel === channelId;
+      res.writeHead(ok ? 200 : 403, {
+        "Access-Control-Allow-Origin": "*",
+        "Content-Type": "text/plain",
+      });
+      res.end(ok ? "ok" : "bad token");
+      return;
+    }
+    const token = url.searchParams.get("token");
     res.writeHead(token === TOKEN ? 200 : 403, {
       "Access-Control-Allow-Origin": "*",
       "Content-Type": "text/plain",
@@ -235,9 +274,21 @@ const server = http.createServer((req, res) => {
 
   // HTTP location push — used by the native app while backgrounded (can't hold a WS open).
   //   POST /push?token=RELAY_TOKEN   body: {"lat":..,"lng":..,"acc":..}
+  //   Multi-tenant mode: POST /push?channel=<id>&token=<channel JWT>
   if (req.method === "POST" && pathOnly === "/push") {
-    const token = new URL(req.url, "http://x").searchParams.get("token");
-    if (token !== TOKEN) { res.writeHead(403); res.end("bad token"); return; }
+    const url = new URL(req.url, "http://x");
+    const token = url.searchParams.get("token");
+    let channel;
+    if (MULTI_TENANT) {
+      const channelId = channelIdFromRequest(url);
+      if (!channelId) { res.writeHead(400); res.end("channel required"); return; }
+      const claims = verifyChannelToken(token, JWT_SECRET);
+      if (!claims || claims.channel !== channelId) { res.writeHead(403); res.end("bad token"); return; }
+      channel = getChannel(channelId);
+    } else {
+      if (token !== TOKEN) { res.writeHead(403); res.end("bad token"); return; }
+      channel = defaultChannel;
+    }
     let body = "";
     req.on("data", (c) => { body += c; if (body.length > 1e4) req.destroy(); });
     req.on("end", () => {
@@ -251,7 +302,7 @@ const server = http.createServer((req, res) => {
       if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) {
         res.writeHead(400); res.end("bad coords"); return;
       }
-      broadcast(msg);
+      broadcast(channel, msg);
       res.writeHead(200, { "Access-Control-Allow-Origin": "*", "Content-Type": "text/plain" });
       res.end("ok");
     });
@@ -400,20 +451,60 @@ const server = http.createServer((req, res) => {
     return;
   }
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("location relay up (broadcast delay " + delayMs + "ms, timer-sync)");
+  if (MULTI_TENANT) {
+    res.end("location relay up (multi-tenant, " + channels.size + " channel" + (channels.size === 1 ? "" : "s") + ")");
+  } else {
+    res.end("location relay up (broadcast delay " + defaultChannel.delayMs + "ms, timer-sync)");
+  }
 });
 
 const wss = new WebSocketServer({ server });
-const overlays = new Set();
-let lastLocation = null; // cached so a freshly-opened overlay snaps to current position
-let lastWind = null;     // cached wind on/off so a freshly-opened overlay syncs
-let lastUnits = null;    // cached units pref so a freshly-opened overlay syncs
-let lastSensors = null;  // cached power/cadence/hr so a freshly-opened overlay syncs
-let lastZones = null;    // cached effort-zone anchors so a freshly-opened overlay syncs
-let lastLiveStart = null;// cached go-live epoch ms so the elapsed timer survives overlay refreshes
-let lastRadar = null;    // cached Varia radar targets so a freshly-opened overlay syncs
-let lastPath = [];       // cached breadcrumb path [[lat,lng],…] so late overlays get the whole route
-let delayMs = 4500;      // hold overlay broadcasts this long to sync with Twitch stream latency; set by the app
+
+// Per-channel state bundle: what used to be the module-level `overlays` Set
+// plus the eight `last*` globals, now one object per channel. In multi-tenant
+// mode there's one of these per streamer, keyed by channel id (their Twitch
+// user id) in `channels`. In single-tenant mode there is exactly one, always
+// `defaultChannel`, and `?channel=` from a caller is ignored — see
+// channelIdFromRequest() below — so a BYO deployment can't accidentally end
+// up multi-room just because a URL happened to carry that query param.
+function freshChannelState() {
+  return {
+    overlays: new Set(),
+    lastLocation: null, // cached so a freshly-opened overlay snaps to current position
+    lastWind: null,     // cached wind on/off so a freshly-opened overlay syncs
+    lastUnits: null,    // cached units pref so a freshly-opened overlay syncs
+    lastSensors: null,  // cached power/cadence/hr so a freshly-opened overlay syncs
+    lastZones: null,    // cached effort-zone anchors so a freshly-opened overlay syncs
+    lastLiveStart: null,// cached go-live epoch ms so the elapsed timer survives overlay refreshes
+    lastRadar: null,    // cached Varia radar targets so a freshly-opened overlay syncs
+    lastPath: [],       // cached breadcrumb path [[lat,lng],…] so late overlays get the whole route
+    delayMs: 4500,      // hold overlay broadcasts this long to sync with Twitch stream latency; set by the app
+  };
+}
+
+const channels = new Map(); // channelId -> per-channel state bundle (multi-tenant mode only)
+const DEFAULT_CHANNEL_ID = "__default__"; // single-tenant mode's one implicit room
+
+function getChannel(id) {
+  let ch = channels.get(id);
+  if (!ch) { ch = freshChannelState(); channels.set(id, ch); }
+  return ch;
+}
+
+// The one channel single-tenant mode ever uses — created eagerly so it exists
+// from boot, same as the old module-level globals did.
+const defaultChannel = !MULTI_TENANT ? getChannel(DEFAULT_CHANNEL_ID) : null;
+
+// Resolves which channel a request/connection belongs to. In single-tenant
+// mode this ALWAYS returns the fixed default id, ignoring any `?channel=` the
+// caller sent — deliberately, so single-tenant behaviour can't be altered by
+// an unexpected query param. In multi-tenant mode it requires a non-empty
+// `?channel=<id>` and returns null if one wasn't given.
+function channelIdFromRequest(url) {
+  if (!MULTI_TENANT) return DEFAULT_CHANNEL_ID;
+  const id = (url.searchParams.get("channel") || "").trim();
+  return id || null;
+}
 
 wss.on("connection", (ws, req) => {
   const url = new URL(req.url, "http://x");
@@ -421,22 +512,39 @@ wss.on("connection", (ws, req) => {
   const token = url.searchParams.get("token");
 
   if (role === "overlay") {
-    overlays.add(ws);
+    let channel;
+    if (MULTI_TENANT) {
+      const channelId = channelIdFromRequest(url);
+      if (!channelId) { ws.close(1008, "channel required"); return; }
+      channel = getChannel(channelId);
+    } else {
+      channel = defaultChannel;
+    }
+    channel.overlays.add(ws);
     ws.on("error", () => {});
-    if (lastWind !== null) ws.send(JSON.stringify({ wind: lastWind }));
-    if (lastUnits !== null) ws.send(JSON.stringify({ units: lastUnits }));
-    if (lastSensors) ws.send(JSON.stringify(lastSensors));
-    if (lastZones) ws.send(JSON.stringify({ zones: lastZones }));
-    if (lastLiveStart) ws.send(JSON.stringify({ liveStart: lastLiveStart }));
-    if (lastRadar) ws.send(JSON.stringify({ radar: lastRadar }));
-    if (lastPath.length) ws.send(JSON.stringify({ path: lastPath }));
-    if (lastLocation) ws.send(JSON.stringify(lastLocation));
-    ws.on("close", () => overlays.delete(ws));
+    if (channel.lastWind !== null) ws.send(JSON.stringify({ wind: channel.lastWind }));
+    if (channel.lastUnits !== null) ws.send(JSON.stringify({ units: channel.lastUnits }));
+    if (channel.lastSensors) ws.send(JSON.stringify(channel.lastSensors));
+    if (channel.lastZones) ws.send(JSON.stringify({ zones: channel.lastZones }));
+    if (channel.lastLiveStart) ws.send(JSON.stringify({ liveStart: channel.lastLiveStart }));
+    if (channel.lastRadar) ws.send(JSON.stringify({ radar: channel.lastRadar }));
+    if (channel.lastPath.length) ws.send(JSON.stringify({ path: channel.lastPath }));
+    if (channel.lastLocation) ws.send(JSON.stringify(channel.lastLocation));
+    ws.on("close", () => channel.overlays.delete(ws));
     return;
   }
 
   if (role === "sender") {
-    if (token !== TOKEN) { ws.close(1008, "bad token"); return; }
+    let channel;
+    if (MULTI_TENANT) {
+      const channelId = channelIdFromRequest(url);
+      const claims = channelId ? verifyChannelToken(token, JWT_SECRET) : null;
+      if (!claims || claims.channel !== channelId) { ws.close(1008, "bad token"); return; }
+      channel = getChannel(channelId);
+    } else {
+      if (token !== TOKEN) { ws.close(1008, "bad token"); return; }
+      channel = defaultChannel;
+    }
     ws.on("error", () => {});
     ws.on("message", (buf) => {
       let msg;
@@ -444,7 +552,7 @@ wss.on("connection", (ws, req) => {
       const keyless = msg.hidden || msg.offline || typeof msg.wind === "boolean" || typeof msg.units === "string"
         || typeof msg.delay === "number" || typeof msg.liveStart === "number" || Array.isArray(msg.radar) || "power" in msg || "cadence" in msg || "hr" in msg || msg.zones;
       if (!keyless && (typeof msg.lat !== "number" || typeof msg.lng !== "number")) return;
-      broadcast(msg);
+      broadcast(channel, msg);
     });
     return;
   }
