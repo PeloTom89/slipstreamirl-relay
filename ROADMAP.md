@@ -9,9 +9,6 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## Near-term
 
-- [ ] **Remove the dead `/tiles/{z}/{x}/{y}.png` proxy** — leftover from the
-      pre-MapLibre raster era; nothing references it anymore since the extension
-      and overlays fetch OpenFreeMap's vector tiles directly.
 - [ ] **Tune effort-zone band cutoffs** — multipliers in `karoo.html` (`zoneIndex`).
 - [ ] **Wind: expose an mph option** at the source calculation, not just display.
 - [ ] **Health/status page** showing connected overlays + last fix age.
@@ -52,6 +49,13 @@ auto-provisioning, distribution, privacy policy, phasing).
 
 ## Done (recent)
 
+- [x] **Removed the dead `/tiles/{z}/{x}/{y}.png` proxy** — confirmed nothing
+      calls it: grepped this repo plus the sibling `slipstreamirl-extension`
+      and `slipstreamirl-app` repos, and `/overlay-raster` (`overlay.html`)
+      fetches OpenStreetMap tiles directly rather than through this proxy. The
+      extension's `overlay.js` had a stray comment referencing a relay tile
+      proxy, but its actual code fetches OpenFreeMap vector tiles directly —
+      the comment was already stale, not a live dependency.
 - [x] **Normalize duplicate road names in Mapbox matching** — the same physical
       road could come back as two entries (e.g. "Moose-Wilson Road" and
       "Moose-Wilson Road (WY 390)") when Mapbox tagged different stretches with
