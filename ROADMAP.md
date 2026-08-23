@@ -13,20 +13,37 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [ ] **Wind: expose an mph option** at the source calculation, not just display.
 - [ ] **Health/status page** showing connected overlays + last fix age.
 
-## Big bet: multi-tenant relay (turnkey for many streamers — needs more thought)
+## Big bet: multi-tenant relay (turnkey for many streamers)
 
-Today the relay is single-tenant: one `RELAY_TOKEN`, one global room, global
-`lastLocation`/`lastWind`/`lastUnits`/`lastSensors`/`lastZones`/`lastRadar`/`lastPath`.
-To host many streamers from one relay:
+Single-tenant behaviour (one `RELAY_TOKEN`, one global room) is still the
+**default** — nothing below applies unless `MULTI_TENANT=1` is set. See
+README.md "Multi-tenant mode" for the full contract (env vars, URL shape,
+token model).
 
-- [ ] **Channels keyed by Twitch user ID** — rooms per channel; overlays join via
-      `?channel=<id>`; pushes target `?channel=<id>`. Move all cached "last*" state
-      into per-channel objects.
-- [ ] **Per-channel auth** — verify the streamer's Twitch token on first push (call
-      Twitch `/users`), issue a signed per-channel push token (JWT). Overlays stay
-      read-only/public by channel id (no secret in OBS URL).
+- [x] **Channels keyed by Twitch user ID** — rooms per channel; overlays join
+      via `?channel=<id>`; pushes target `?channel=<id>`. All cached "last*"
+      state (`lastLocation`/`lastWind`/`lastUnits`/`lastSensors`/`lastZones`/
+      `lastRadar`/`lastPath`/`delayMs`) plus the overlay `Set` moved into
+      per-channel objects (`server.js`'s `channels` Map). Isolation between
+      simultaneously-active channels, and per-channel late-join replay, are
+      covered by `tools/relay-server.test.mjs`.
+- [~] **Per-channel auth** — pushes are gated by a signed per-channel JWT
+      (`tools/channel-token.js`; claims `{channel,iat,exp}`), checked against
+      the request's `?channel=` on every `/push` and sender WebSocket.
+      Overlays stay read-only/public by channel id (no secret in OBS URL), as
+      planned. **Not done yet:** verifying the streamer's Twitch identity to
+      auto-issue that token (call Twitch `/users`) — today it's minted by hand
+      via `tools/mint-channel-token.js`, an ops tool for the friends-scale
+      phase. Wiring real issuance needs app-side changes (a separate roadmap
+      item, see the app repo's `ROADMAP.md`).
+- [ ] **Entitlement-gated renewal** — the JWT's `exp` claim exists so a
+      subscription check can gate token renewal later without a token-format
+      change, but no billing/entitlement check exists yet. Deliberately not
+      built as part of channel-keying — separate phase.
 - [ ] **Scaling** — Render always-on; if multi-instance, Redis pub/sub to share
-      rooms across instances (WebSocket fan-out).
+      rooms across instances (WebSocket fan-out). Still premature per the
+      multi-tenant design doc's cost/scale analysis — single-instance covers
+      friends-scale and well beyond.
 
 See the app `ROADMAP.md` "Big bet" section for the full turnkey plan (app
 auto-provisioning, distribution, privacy policy, phasing).
@@ -49,6 +66,15 @@ auto-provisioning, distribution, privacy policy, phasing).
 
 ## Done (recent)
 
+- [x] **Multi-tenant relay, opt-in mode** — see the "Big bet" section above and
+      README.md "Multi-tenant mode". `broadcast()`/`emit()` now take an
+      explicit `channel` state bundle instead of closing over module-level
+      globals, specifically to avoid the class of bug called out below
+      (a message reaching the wrong channel, or none, silently) when
+      channelizing them. Single-tenant mode (the default) reuses the exact
+      same code path against one fixed internal channel and ignores any
+      `?channel=` a caller sends, which is what keeps its behaviour identical
+      to before — verified by `tools/relay-server.test.mjs`, not just assumed.
 - [x] **Removed the dead `/tiles/{z}/{x}/{y}.png` proxy** — confirmed nothing
       calls it: grepped this repo plus the sibling `slipstreamirl-extension`
       and `slipstreamirl-app` repos, and `/overlay-raster` (`overlay.html`)
@@ -105,7 +131,9 @@ auto-provisioning, distribution, privacy policy, phasing).
 
 ## Protocol notes (keep in sync with the app)
 
-Messages the sender pushes via `POST /push?token=…`:
+Messages the sender pushes via `POST /push?token=…` (multi-tenant mode:
+`POST /push?channel=<id>&token=<channel JWT>` — see README.md "Multi-tenant
+mode"; every message below is routed and cached per-channel in that mode):
 
 | message                       | meaning                       | needs lat/lng |
 |-------------------------------|-------------------------------|---------------|
@@ -126,3 +154,6 @@ Messages the sender pushes via `POST /push?token=…`:
 silently dropped (this was a real bug). Persistent state is cached
 (`lastWind`/`lastUnits`/`lastSensors`/`lastZones`/`lastLocation`/`lastRadar`/`lastPath`)
 and replayed on overlay connect.
+
+In multi-tenant mode this same hazard applies to *which channel* a message
+reaches, not just whether it's dropped — see AGENTS.md.

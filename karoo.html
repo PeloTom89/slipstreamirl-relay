@@ -86,7 +86,7 @@
             <div class="val"><span id="hr">--</span><span class="unit">bpm</span></div>
           </div>
         </div>
-        <div id="mapwrap"><iframe src="/overlay?embed=1" scrolling="no"></iframe></div>
+        <div id="mapwrap"><iframe id="mapframe" src="/overlay?embed=1" scrolling="no"></iframe></div>
       </div>
       <div id="brand">SLIPSTREAMIRL</div>
     </div>
@@ -95,9 +95,19 @@
   <script>
     /* ===== CONFIG ===== */
     const RELAY_URL = location.origin.replace(/^http/, "ws");
+    const karooParams = new URLSearchParams(location.search);
     // ?units sets the initial state; a live {units} message from the app overrides.
-    let units = (new URLSearchParams(location.search).get("units") || "imperial").toLowerCase();
+    let units = (karooParams.get("units") || "imperial").toLowerCase();
     let METRIC = units === "metric" || units === "km";
+    // Multi-tenant mode: which channel's room to join. Empty/absent in
+    // single-tenant deployments, where the relay ignores this param anyway.
+    // The embedded /overlay iframe needs it forwarded too, since it opens its
+    // own separate WebSocket connection.
+    const CHANNEL = (karooParams.get("channel") || "").trim();
+    if (CHANNEL) {
+      const mapframe = document.getElementById("mapframe");
+      if (mapframe) mapframe.src = "/overlay?embed=1&channel=" + encodeURIComponent(CHANNEL);
+    }
     /* ================== */
 
     const elSpeed = document.getElementById("speed");
@@ -224,7 +234,7 @@
     // The map lives in the embedded /overlay iframe; this socket only feeds the
     // SPEED and DISTANCE cards (and the ride timer).
     function connect() {
-      const ws = new WebSocket(RELAY_URL + "?role=overlay");
+      const ws = new WebSocket(RELAY_URL + "?role=overlay" + (CHANNEL ? "&channel=" + encodeURIComponent(CHANNEL) : ""));
       ws.onmessage = (e) => {
         try {
           const d = JSON.parse(e.data);

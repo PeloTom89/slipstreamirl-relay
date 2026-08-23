@@ -43,6 +43,8 @@ your OBS browser source. No RTIRL, no third-party location service.
 | `ext/` | `/ext/*` | static copy of the Twitch Extension bundle (MapLibre `video_overlay.html` + `overlay.js`), served for the app's in-app Extension preview |
 | `tools/simulate-gpx.mjs` | — | dev tool: replay a GPX route into the relay without actually riding |
 | `tools/road-names.mjs` | — | groups Mapbox map-matching step names into de-duped, ranked roads for the workflow below (`npm test`) |
+| `tools/channel-token.js` | — | signs/verifies the per-channel push JWT used by multi-tenant mode (below) |
+| `tools/mint-channel-token.js` | — | ops CLI: mints a channel's push token (multi-tenant mode) |
 | `.github/workflows/strava-youtube-comment.yml` | — | scheduled job, see **Strava/YouTube auto-post** below |
 | `render.yaml` | — | Render Blueprint (auto-provisions the service + token) |
 
@@ -69,8 +71,10 @@ summary for the workflow below), WebSocket `?role=overlay|sender`.
 
 ## Push protocol
 
-The app pushes JSON to `POST /push?token=…`. Beyond a normal position fix, several
-**keyless** control messages are supported (no lat/lng required):
+The app pushes JSON to `POST /push?token=…` (in multi-tenant mode,
+`POST /push?channel=<id>&token=<channel JWT>` — see **Multi-tenant mode**
+below). Beyond a normal position fix, several **keyless** control messages
+are supported (no lat/lng required):
 
 | message | meaning |
 |---|---|
@@ -90,6 +94,76 @@ The app pushes JSON to `POST /push?token=…`. Beyond a normal position fix, sev
 (`lastLocation`/`lastWind`/`lastUnits`/`lastSensors`/`lastZones`/`lastRadar`/`lastPath`),
 replaying them to any overlay that connects later. **Any new keyless message must be
 allowed in both `/push` validation and `broadcast()`, or it's silently dropped.**
+
+## Multi-tenant mode
+
+Off by default — every free/BYO deploy and the captain's own existing deployment
+keep working exactly as documented above, with no config change. This is an
+**opt-in mode of the same `server.js`**, not a fork, for hosting many streamers'
+rooms from one relay instance (the paid/turnkey tier). See `ROADMAP.md` for the
+product context.
+
+**Enable it** with two env vars:
+
+- `MULTI_TENANT=1`
+- `RELAY_JWT_SECRET=<a long random string>` — signs/verifies push tokens. The
+  server refuses to start if `MULTI_TENANT=1` and this is unset.
+
+**What changes when it's on:**
+
+- All per-ride state (`lastLocation`/`lastWind`/`lastUnits`/`lastSensors`/
+  `lastZones`/`lastRadar`/`lastPath`/`delayMs`) and the overlay `Set` become
+  per-channel, keyed by channel id (the streamer's Twitch user id). Each
+  channel is its own isolated room — see `tools/relay-server.test.mjs` for the
+  isolation guarantees this is tested against.
+- Every relay-facing URL takes `?channel=<id>`:
+  - Overlays: `/overlay?channel=<id>`, `/overlay-gl?channel=<id>`,
+    `/overlay-raster?channel=<id>`, `/karoo?channel=<id>` (which forwards it to
+    its embedded `/overlay` iframe too). Overlays stay **read-only and public
+    by channel id** — no token in the URL, since OBS browser-source URLs get
+    shown on stream. `chat.html`'s own `?channel=` is unrelated — it's the
+    Twitch **login name** used to join Twitch IRC directly, not a relay room;
+    `/chat` never opens a relay WebSocket at all, so it needs no change here.
+  - Sender: `POST /push?channel=<id>&token=<channel JWT>`, or WebSocket
+    `?role=sender&channel=<id>&token=<channel JWT>`.
+  - `GET /health?channel=<id>&token=<channel JWT>`.
+- A channel id with no `?channel=` on `/push`, a sender WebSocket, or an
+  overlay WebSocket is rejected (`400`/close `1008`). A channel is created
+  lazily in memory on first authenticated `/push` or sender-WebSocket message
+  — nothing to provision. An overlay WebSocket only *joins* an already-created
+  channel; connecting to a channel id that hasn't been pushed to yet is
+  rejected (close `1008`) rather than creating one, so an unauthenticated
+  overlay URL can't be used to grow server memory with channels that never
+  receive data. This is self-healing: the overlay pages already retry the
+  WebSocket every 2s on close, so adding an OBS browser source before the
+  first push just means it connects a couple of seconds after the stream's
+  first location fix instead of immediately.
+
+**Token model.** The push token is a minimal HS256 JWT (`tools/channel-token.js`,
+no `jsonwebtoken` dependency — just Node's `crypto`) with claims
+`{ channel, iat, exp }`, signed with `RELAY_JWT_SECRET`. `/push` and the sender
+WebSocket verify the signature and expiry, and that `claims.channel` matches
+the `?channel=` on the request — a token minted for one channel is rejected on
+any other. Mint one manually for now (there's no issuance endpoint yet — see
+below):
+
+```
+RELAY_JWT_SECRET=... node tools/mint-channel-token.js <channelId> [ttlSeconds]
+```
+
+This is deliberately just enough to make the channel isolation and the push
+auth work end-to-end today. **Not built, on purpose:** verifying the
+streamer's Twitch identity to auto-issue a token, and any entitlement/billing
+check gating renewal — both are separate, later roadmap items (see
+`ROADMAP.md`). The `exp` claim exists so an expiry-based entitlement check can
+be layered on top later (e.g. reissue only while a subscription is active)
+without any change to the token format.
+
+**Not in scope of this mode:** Redis, multi-instance fan-out, or any
+horizontal scaling — a single instance handles far more load than this will
+see at friends-scale. Ride data is still never persisted to disk in this mode
+either — per-channel state is in-memory only, same privacy property as
+single-tenant mode (see **Notes** below).
 
 ## Strava/YouTube auto-post workflow
 
@@ -154,11 +228,17 @@ the description onto the YouTube video too).
 - `GITHUB_CONTENT_PAT` *(optional)* — lets `/ride-summary` commit a dictated
   post-ride summary into this repo via the GitHub Contents API, for the Strava
   workflow above to pick up.
+- `MULTI_TENANT` / `RELAY_JWT_SECRET` *(optional)* — enable multi-tenant mode.
+  See **Multi-tenant mode** above; unset on every free/BYO deploy.
 
 ## Notes
 
 - **Cold start:** the free Render tier sleeps after ~15 min idle (30–50s to wake).
   Connect a minute before going live.
-- **Single-tenant:** today this is one streamer per relay (one token, one room).
-  Multi-tenant (many streamers on one relay, keyed by Twitch ID) is in `ROADMAP.md`.
+- **Single-tenant by default:** one streamer per relay (one token, one room) —
+  every free/BYO deploy, unchanged. **Multi-tenant mode** (above) is an opt-in
+  flag on this same `server.js` for hosting many streamers on one relay,
+  keyed by Twitch ID; remaining multi-tenant work (Twitch-identity-verified
+  token issuance, app-side auto-provisioning, entitlement/billing) is in
+  `ROADMAP.md`.
 - The token is visible in the served control page's JS, so treat the relay URL as private.
