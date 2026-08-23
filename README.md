@@ -127,9 +127,17 @@ product context.
   - Sender: `POST /push?channel=<id>&token=<channel JWT>`, or WebSocket
     `?role=sender&channel=<id>&token=<channel JWT>`.
   - `GET /health?channel=<id>&token=<channel JWT>`.
-- A channel id with no `?channel=` on `/push` or a sender WebSocket is
-  rejected (`400`/close `1008`); overlays likewise close without one. A
-  channel is created lazily in memory on first use — nothing to provision.
+- A channel id with no `?channel=` on `/push`, a sender WebSocket, or an
+  overlay WebSocket is rejected (`400`/close `1008`). A channel is created
+  lazily in memory on first authenticated `/push` or sender-WebSocket message
+  — nothing to provision. An overlay WebSocket only *joins* an already-created
+  channel; connecting to a channel id that hasn't been pushed to yet is
+  rejected (close `1008`) rather than creating one, so an unauthenticated
+  overlay URL can't be used to grow server memory with channels that never
+  receive data. This is self-healing: the overlay pages already retry the
+  WebSocket every 2s on close, so adding an OBS browser source before the
+  first push just means it connects a couple of seconds after the stream's
+  first location fix instead of immediately.
 
 **Token model.** The push token is a minimal HS256 JWT (`tools/channel-token.js`,
 no `jsonwebtoken` dependency — just Node's `crypto`) with claims
