@@ -27,19 +27,31 @@ token model).
       per-channel objects (`server.js`'s `channels` Map). Isolation between
       simultaneously-active channels, and per-channel late-join replay, are
       covered by `tools/relay-server.test.mjs`.
-- [~] **Per-channel auth** — pushes are gated by a signed per-channel JWT
+- [x] **Per-channel auth** — pushes are gated by a signed per-channel JWT
       (`tools/channel-token.js`; claims `{channel,iat,exp}`), checked against
       the request's `?channel=` on every `/push` and sender WebSocket.
-      Overlays stay read-only/public by channel id (no secret in OBS URL), as
-      planned. **Not done yet:** verifying the streamer's Twitch identity to
-      auto-issue that token (call Twitch `/users`) — today it's minted by hand
-      via `tools/mint-channel-token.js`, an ops tool for the friends-scale
-      phase. Wiring real issuance needs app-side changes (a separate roadmap
-      item, see the app repo's `ROADMAP.md`).
-- [ ] **Entitlement-gated renewal** — the JWT's `exp` claim exists so a
-      subscription check can gate token renewal later without a token-format
-      change, but no billing/entitlement check exists yet. Deliberately not
-      built as part of channel-keying — separate phase.
+      Overlays stay read-only/public by channel id (no secret in OBS URL).
+      `POST /channel-token` now verifies the streamer's Twitch identity (calls
+      Twitch `/users` with the caller's own access token) before issuing —
+      see README.md "Stripe entitlement". `tools/mint-channel-token.js` (ops,
+      manual) still works unchanged for channels run without Stripe wired up.
+      **Still open:** wiring `/channel-token` into the app itself (app-side
+      auto-provisioning) is a separate roadmap item, see the app repo's
+      `ROADMAP.md`.
+- [x] **Entitlement-gated renewal** — `POST /channel-token` refuses to issue
+      unless a Stripe subscription is active (or within its grace period) for
+      that Twitch id. Stripe is the sole source of truth (no durable local
+      store — see README.md "Stripe entitlement" for why, given Render's free
+      plan). Handles `customer.subscription.created/updated/deleted` and
+      `invoice.payment_failed`; webhook signature verification is
+      security-critical and covered by `tools/stripe-entitlement.test.mjs`
+      and `tools/relay-entitlement.test.mjs`. Grace period
+      (`ENTITLEMENT_GRACE_SECONDS`, default 3 days) is a placeholder default —
+      **the captain still needs to confirm this value.** Never a live check on
+      the hot `/push` path — checked only at token issuance.
+      **Still open:** Discord as a second, OR'd entitlement source (explicitly
+      out of scope of the change that added Stripe — see README.md "Discord
+      (not built)").
 - [ ] **Scaling** — Render always-on; if multi-instance, Redis pub/sub to share
       rooms across instances (WebSocket fan-out). Still premature per the
       multi-tenant design doc's cost/scale analysis — single-instance covers
@@ -66,6 +78,15 @@ auto-provisioning, distribution, privacy policy, phasing).
 
 ## Done (recent)
 
+- [x] **Stripe entitlement gating for channel-token issuance** — see the "Big
+      bet" section above and README.md "Stripe entitlement" for the full
+      design (why Stripe, not a local store, is the source of truth; the
+      Twitch↔Stripe identity link; the grace-period model). Tested without
+      live Stripe credentials, against fixtures shaped like Stripe's
+      documented event/signature scheme (`tools/stripe-entitlement.test.mjs`,
+      `tools/relay-entitlement.test.mjs`) — a few specifics (exact Payment
+      Link Dashboard mechanics, real webhook delivery behavior) are flagged
+      in README.md as unverified until the captain has a live account.
 - [x] **Multi-tenant relay, opt-in mode** — see the "Big bet" section above and
       README.md "Multi-tenant mode". `broadcast()`/`emit()` now take an
       explicit `channel` state bundle instead of closing over module-level

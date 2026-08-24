@@ -37,6 +37,31 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `require()`'d. Its test file is still `tools/channel-token.test.mjs` per the
   `npm test` glob — Node's ESM loader can import CJS named exports from a
   plain `module.exports = {...}` object fine, confirmed working here.
+- **Stripe entitlement (`tools/stripe-entitlement.js`, gates `POST
+  /channel-token`) deliberately keeps zero durable local state** — Render's
+  free plan has an ephemeral filesystem and sleeps, so any local store of
+  "who has paid" (a file, or a plain in-memory map with nothing behind it)
+  silently un-entitles paying customers on the next restart. Stripe itself is
+  the sole source of truth for both subscription status and the Twitch↔Stripe
+  identity link (`metadata.twitch_id`, set by whatever the captain configures
+  in his Payment Link — this code only ever reads Stripe, never writes). A
+  webhook-warmed in-memory cache is just a speed optimization; a cache
+  miss/restart self-heals via one read-only Stripe Search API call keyed on
+  that same metadata. See README.md "Stripe entitlement" before changing
+  anything here — the "no durable state" property is the entire point, not an
+  oversight to "fix" by adding a database.
+- `tools/spawn-relay.mjs` holds the shared "spawn a real server.js child
+  process on a random port" helper used by both `tools/relay-server.test.mjs`
+  and `tools/relay-entitlement.test.mjs`. It intentionally does not match the
+  `tools/*.test.mjs` glob `npm test` runs, so it's a plain importable module,
+  not a test suite itself.
+- Two env vars exist purely as test seams and are never meant to be set in
+  production: `TWITCH_HELIX_BASE` and `STRIPE_API_BASE` (both default to the
+  real API hosts). Integration tests point these at a local stub HTTP server
+  so `tools/relay-entitlement.test.mjs` can exercise `POST /channel-token`
+  and `POST /stripe-webhook` end-to-end without live Twitch or Stripe
+  credentials. Don't document these in README.md's captain-facing env var
+  tables — they're not something he ever needs to set.
 
 ## Maintaining this file
 

@@ -45,13 +45,16 @@ your OBS browser source. No RTIRL, no third-party location service.
 | `tools/road-names.mjs` | — | groups Mapbox map-matching step names into de-duped, ranked roads for the workflow below (`npm test`) |
 | `tools/channel-token.js` | — | signs/verifies the per-channel push JWT used by multi-tenant mode (below) |
 | `tools/mint-channel-token.js` | — | ops CLI: mints a channel's push token (multi-tenant mode) |
+| `tools/stripe-entitlement.js` | — | Stripe webhook verification + entitlement cache/reconciliation (see **Stripe entitlement** below) |
 | `.github/workflows/strava-youtube-comment.yml` | — | scheduled job, see **Strava/YouTube auto-post** below |
 | `render.yaml` | — | Render Blueprint (auto-provisions the service + token) |
 
 Endpoints: `POST /push` (sender), `GET /health` (token check), `GET /badges`
 (chat badges), `GET /app-redirect` (Twitch OAuth bounce), `POST /ai/twitch-title`
 (Claude ride-plan → title), `POST /ride-summary` (parks a dictated post-ride
-summary for the workflow below), WebSocket `?role=overlay|sender`.
+summary for the workflow below), `POST /channel-token` (entitlement-gated
+channel push token issuance, multi-tenant mode), `POST /stripe-webhook`
+(Stripe entitlement events, multi-tenant mode), WebSocket `?role=overlay|sender`.
 
 ## Overlay features
 
@@ -144,26 +147,228 @@ no `jsonwebtoken` dependency — just Node's `crypto`) with claims
 `{ channel, iat, exp }`, signed with `RELAY_JWT_SECRET`. `/push` and the sender
 WebSocket verify the signature and expiry, and that `claims.channel` matches
 the `?channel=` on the request — a token minted for one channel is rejected on
-any other. Mint one manually for now (there's no issuance endpoint yet — see
-below):
+any other.
 
-```
-RELAY_JWT_SECRET=... node tools/mint-channel-token.js <channelId> [ttlSeconds]
-```
+**Issuing a token.** Two ways, and both remain available:
 
-This is deliberately just enough to make the channel isolation and the push
-auth work end-to-end today. **Not built, on purpose:** verifying the
-streamer's Twitch identity to auto-issue a token, and any entitlement/billing
-check gating renewal — both are separate, later roadmap items (see
-`ROADMAP.md`). The `exp` claim exists so an expiry-based entitlement check can
-be layered on top later (e.g. reissue only while a subscription is active)
-without any change to the token format.
+- **Automatic, entitlement-gated (`POST /channel-token`)** — see **Stripe
+  entitlement** below. This is the path a real paying customer's app should
+  use, and it only issues a token to someone with an active (or recently
+  active, see grace period) Stripe subscription.
+- **Manual (ops tool, unaffected)** — for the friends-scale phase, or any
+  channel you want to run without wiring up Stripe at all:
+  ```
+  RELAY_JWT_SECRET=... node tools/mint-channel-token.js <channelId> [ttlSeconds]
+  ```
+  `/channel-token` deliberately falls back to unavailable (503) rather than
+  issuing anything when `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` aren't
+  both set — this tool keeps working exactly as before in that case.
+
+The `exp` claim is what makes entitlement expiry-based rather than a live
+per-push billing check — see **Stripe entitlement** below for why that
+matters.
 
 **Not in scope of this mode:** Redis, multi-instance fan-out, or any
 horizontal scaling — a single instance handles far more load than this will
 see at friends-scale. Ride data is still never persisted to disk in this mode
 either — per-channel state is in-memory only, same privacy property as
-single-tenant mode (see **Notes** below).
+single-tenant mode (see **Notes** below). The entitlement cache added below
+lives in its own separate in-memory `Map`, keyed by Twitch id — it never
+touches, and is never touched by, the per-channel ride-state `Map`, so adding
+billing state hasn't made ride data durable as a side effect.
+
+## Stripe entitlement
+
+Gates `POST /channel-token` (above) on a paying Stripe subscription. Opt-in,
+on top of multi-tenant mode: unset `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`
+and this whole feature is inert — `/channel-token` just answers 503 and
+manual minting keeps working, same as before this existed.
+
+### The design question: where does "who has paid" live?
+
+This relay deploys on **Render's Free plan** (`render.yaml`): ephemeral
+filesystem, sleeps after ~15 minutes idle. A local file, or a plain in-memory
+map with nothing behind it, would silently un-entitle every paying customer
+on the next restart or sleep — the worst possible bug for this feature to
+have, and one that would fail completely silently.
+
+**Chosen: Stripe is the sole source of truth, with an in-memory cache that
+Stripe itself can always rebuild.** No durable local store exists, or is
+needed, for either subscription status or the Twitch↔Stripe identity link:
+
+- The identity link (which Stripe customer is which Twitch streamer) lives in
+  **Stripe's own `metadata.twitch_id`** — see **What to configure in Stripe**
+  below — not in anything this relay stores. This code only ever *reads*
+  Stripe; it never creates or updates a Customer, Subscription, Price,
+  Product, or Payment Link.
+- A short-lived in-memory cache (`tools/stripe-entitlement.js`), keyed by
+  Twitch id, is kept warm by webhooks so the common case — a streamer whose
+  process already knows about them — needs no network call.
+- On a **cache miss** (a Twitch id this process has never seen — e.g. right
+  after a Render sleep/restart, when the in-memory cache is empty by
+  construction — or an entry that's aged past its grace window), the relay
+  reconciles with **one read-only Stripe Search API call**
+  (`GET /v1/subscriptions/search?query=metadata['twitch_id']:'<id>'`). This is
+  what makes a restart harmless: nothing durable was ever needed, because
+  Stripe already durably holds both the identity link and the subscription
+  status.
+
+This was evaluated against the two alternatives named in the design brief:
+a **local durable store** was rejected because it requires infrastructure
+the captain hasn't authorized or provisioned (Render's free plan has none);
+a pure **"always query Stripe" model** and a **"webhook cache + reconciliation
+on miss" model** turn out to be the same thing here, because there's no
+separate identity table to keep in sync — Stripe's metadata search doubles as
+that table. The cost accepted: an API call on the token-renewal path (not the
+hot GPS-push path — see below), and a soft dependency on Stripe being
+reachable (see **What happens if Stripe is unreachable**).
+
+**The hot path is untouched.** `POST /push` (every ~3s while riding) never
+calls Stripe, never checks entitlement, and never even looks at the
+entitlement cache — it only checks the existing per-channel JWT's signature
+and expiry, exactly as before. Entitlement is checked **once, at token
+issuance/renewal** (`POST /channel-token`, expected ~daily per streamer, not
+per GPS fix). A lapsed subscription means *the next token isn't issued* —
+never "this ride's connection gets torn down." An already-issued token keeps
+working for its full lifetime (currently ~1 day, `tools/channel-token.js`'s
+default TTL) regardless of what happens to the subscription in the meantime.
+
+### Identity linking: Stripe customer ↔ Twitch id
+
+**What the relay expects:** somewhere on the Stripe object a webhook event
+carries — the Subscription, or (fallback) the Customer it belongs to — a
+`metadata.twitch_id` key holding the streamer's Twitch user id. The relay
+checks, in order: (1) `metadata.twitch_id` directly on the event's object,
+(2) `client_reference_id` on a `checkout.session.completed` event, (3) a
+lookup of the Customer's own `metadata.twitch_id` (for events, mainly
+Invoices, whose object has no metadata of its own but does have a `customer`
+id).
+
+**What the captain needs to set up in Stripe (not built by this change — see
+"Explicitly out of scope"):** when creating the Payment Link (or Checkout
+Session) customers use to subscribe, attach the subscriber's Twitch id as
+`metadata.twitch_id` on the resulting Subscription or Customer. Two ways to
+do this, in order of how little code they need:
+
+1. **No-code, if your Payment Link supports it:** add a required Custom
+   Field (e.g. "Twitch username or ID") to the Payment Link, then reference
+   it in the Payment Link's own metadata using Stripe's `{{custom_field_key}}`
+   templating syntax, so the field's answer is copied into
+   `metadata.twitch_id` automatically. **Confirm this exact mechanism in your
+   live Stripe Dashboard before relying on it** — this could not be verified
+   without a real account, per this task's constraints (no Stripe account
+   was created, no live Dashboard was used).
+2. **Fallback, if (1) isn't available for your Payment Link type:** use
+   `client_reference_id` as a query parameter on the Payment Link URL
+   (`?client_reference_id=<twitch_id>`), which Stripe does copy onto the
+   resulting Checkout Session. This only appears on `checkout.session.completed`,
+   so it requires whatever page constructs that URL to already know the
+   subscriber's Twitch id — meaningfully more web-surface work than (1), and
+   out of scope of this change (no purchase/checkout page was built here).
+
+Either way, this is genuinely the fiddliest part of this feature and the
+part most likely to need iteration once real Stripe checkout is live — this
+code accepts the identity signal from any of the three lookup paths above
+specifically so it isn't locked into one exact Dashboard mechanism.
+
+### Events handled
+
+| Stripe event | Effect |
+|---|---|
+| `customer.subscription.created` | Entitles through `current_period_end` + grace, if `status` is `active`/`trialing` |
+| `customer.subscription.updated` | Same as above if entitling; otherwise treated as a lapse (e.g. `past_due`, `unpaid`, `canceled`) |
+| `customer.subscription.deleted` | Lapse — grace period starts now |
+| `invoice.payment_failed` | Lapse — grace period starts now |
+
+A "lapse" never *extends* entitlement past what an active subscription
+already had — it only caps it at `now + grace`, so a mid-period cancellation
+doesn't accidentally grant the rest of that period. A lapse for a Twitch id
+this process has never seen still opens a fresh grace window rather than
+denying outright — deliberately favoring a false *allow* (a few extra days of
+service) over a false *deny* (a customer's stream cut off), per the design
+brief's stated priority.
+
+`invoice.paid`/`customer.subscription.trial_will_end` and other Stripe events
+are received but ignored — `customer.subscription.updated` already fires on
+renewal (period-end change with `status` staying `active`), so a dedicated
+`invoice.paid` handler was judged redundant. **This assumption could not be
+verified against a live Stripe account's actual event stream** — worth
+confirming once real checkout traffic exists.
+
+### What happens if Stripe is unreachable
+
+Only affects `POST /channel-token` (renewal), never a live ride. If that
+Twitch id has ever been positively confirmed entitled before (even if that's
+since lapsed past its grace window), the relay trusts that rather than
+guessing — a transient Stripe outage shouldn't cut off someone who was
+already a known subscriber. If the Twitch id has never been seen at all, or
+has only ever been confirmed NOT entitled, the request is refused (403 "not
+entitled") rather than inventing an answer.
+
+### Grace period
+
+**`ENTITLEMENT_GRACE_SECONDS`** — defaults to **3 days (259200)**. **This
+default is not the captain's confirmed choice — it needs his sign-off.** Err
+generous per the design brief: a false allow costs a few days of service, a
+false deny costs a customer's stream. Raise it if that tradeoff feels too
+tight; Stripe's own dunning/retry window (configurable in the Stripe
+Dashboard, separate from this setting) can already run several days on its
+own before a subscription flips to `past_due`/`unpaid`, so this grace period
+stacks on top of whatever Stripe's own retries already bought.
+
+### Env vars
+
+- `STRIPE_SECRET_KEY` — Stripe secret API key. Used only for read calls
+  (`GET /v1/subscriptions/search`, `GET /v1/customers/:id`) — never a write.
+- `STRIPE_WEBHOOK_SECRET` — the signing secret Stripe shows when you register
+  the webhook endpoint (below). Required to verify `Stripe-Signature` —
+  **without this, the endpoint would accept a forged event from anyone**, so
+  both this and `STRIPE_SECRET_KEY` must be set together or entitlement stays
+  off.
+- `ENTITLEMENT_GRACE_SECONDS` *(optional, default `259200` = 3 days)* — see
+  above.
+
+Both are unset on every free/BYO deploy and on the captain's own deployment
+until he opts in — this is purely additive to multi-tenant mode.
+
+### What the captain needs to create in Stripe (not done by this change)
+
+Per this task's scope, **no Stripe account, product, price, Payment Link,
+webhook, or customer was created or modified** — only the relay code that
+consumes them. Before this works end-to-end, the captain needs to:
+
+1. Create the subscription Product/Price and a Payment Link (or hosted
+   Checkout) in the Stripe Dashboard — the relay never cares what the price is.
+2. Configure that Payment Link/Checkout to attach `metadata.twitch_id` to the
+   resulting Subscription or Customer — see **Identity linking** above.
+3. Register a webhook endpoint at `https://<your-relay-url>/stripe-webhook`,
+   subscribed to at least: `customer.subscription.created`,
+   `customer.subscription.updated`, `customer.subscription.deleted`,
+   `invoice.payment_failed`. Copy the signing secret Stripe shows into
+   `STRIPE_WEBHOOK_SECRET`.
+4. Set `STRIPE_SECRET_KEY` to a **secret** (not publishable) API key.
+5. Confirm the grace period default above, and the identity-linking mechanism
+   in (2) against your live Dashboard — both are flagged in this README as
+   unverified without a real Stripe account.
+
+### What could not be verified without a live Stripe account
+
+- Whether the exact no-code "Custom Field → `{{template}}` → subscription
+  metadata" mechanism described under **Identity linking** is available for
+  every Payment Link type in the current Stripe Dashboard.
+- Whether `customer.subscription.updated` reliably fires on every renewal in
+  practice (assumed here, based on Stripe's documented webhook model, but not
+  observed against a real event stream).
+- Real-world webhook delivery latency/retries, and how Stripe's own dunning
+  schedule (Dashboard-configured) interacts with this relay's independent
+  grace period in practice.
+
+### Discord (not built)
+
+The entitlement store's `isEntitled()` check is structured so a second
+source could be OR'd in later (any source that can say "entitled until
+timestamp X" for a Twitch id) without changing the token-issuance code path
+or the JWT format — but no Discord integration exists, per this task's scope.
 
 ## Strava/YouTube auto-post workflow
 
@@ -230,6 +435,10 @@ the description onto the YouTube video too).
   workflow above to pick up.
 - `MULTI_TENANT` / `RELAY_JWT_SECRET` *(optional)* — enable multi-tenant mode.
   See **Multi-tenant mode** above; unset on every free/BYO deploy.
+- `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `ENTITLEMENT_GRACE_SECONDS`
+  *(optional, multi-tenant mode only)* — enable Stripe-backed entitlement
+  gating on channel-token issuance. See **Stripe entitlement** above; unset
+  on every free/BYO deploy and until the captain opts in.
 
 ## Notes
 
@@ -238,7 +447,7 @@ the description onto the YouTube video too).
 - **Single-tenant by default:** one streamer per relay (one token, one room) —
   every free/BYO deploy, unchanged. **Multi-tenant mode** (above) is an opt-in
   flag on this same `server.js` for hosting many streamers on one relay,
-  keyed by Twitch ID; remaining multi-tenant work (Twitch-identity-verified
-  token issuance, app-side auto-provisioning, entitlement/billing) is in
-  `ROADMAP.md`.
+  keyed by Twitch ID, with Twitch-identity-verified, Stripe-entitlement-gated
+  token issuance (**Stripe entitlement** above); remaining work (app-side
+  auto-provisioning, Discord as a second entitlement source) is in `ROADMAP.md`.
 - The token is visible in the served control page's JS, so treat the relay URL as private.
