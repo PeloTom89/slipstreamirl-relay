@@ -43,13 +43,24 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   "who has paid" (a file, or a plain in-memory map with nothing behind it)
   silently un-entitles paying customers on the next restart. Stripe itself is
   the sole source of truth for both subscription status and the Twitch↔Stripe
-  identity link (`metadata.twitch_id`, set by whatever the captain configures
-  in his Payment Link — this code only ever reads Stripe, never writes). A
-  webhook-warmed in-memory cache is just a speed optimization; a cache
-  miss/restart self-heals via one read-only Stripe Search API call keyed on
-  that same metadata. See README.md "Stripe entitlement" before changing
-  anything here — the "no durable state" property is the entire point, not an
-  oversight to "fix" by adding a database.
+  identity link (`metadata.twitch_id`). A webhook-warmed in-memory cache is
+  just a speed optimization; a cache miss/restart self-heals via one
+  read-only Stripe Search API call keyed on that same metadata. See README.md
+  "Stripe entitlement" before changing anything here — the "no durable state"
+  property is the entire point, not an oversight to "fix" by adding a
+  database. **One exception:** `createSubscriptionMetadataWriter` performs a
+  single narrowly-scoped write (`POST /v1/subscriptions/:id`,
+  `metadata.twitch_id` only) from the `checkout.session.completed` handler,
+  because `client_reference_id` — Checkout's identity field when the captain
+  uses that mechanism instead of a metadata-templated Payment Link — lives
+  only on the Checkout Session and nowhere `reconcile()` can re-query later;
+  without this write the identity link died with the in-memory cache on
+  every restart. This does not reintroduce local durable state — it makes
+  Stripe durably hold the link, consistent with the module's own principle —
+  but it does mean `STRIPE_SECRET_KEY` is no longer read-only. Any future
+  change to this module must keep that one write exactly that narrow (one
+  metadata key, one endpoint, one call site); don't add a second write path
+  without the same restart-safety reasoning applied.
 - `tools/spawn-relay.mjs` holds the shared "spawn a real server.js child
   process on a random port" helper used by both `tools/relay-server.test.mjs`
   and `tools/relay-entitlement.test.mjs`. It intentionally does not match the

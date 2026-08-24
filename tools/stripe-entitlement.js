@@ -12,10 +12,17 @@
 //     rebuild it from would silently un-entitle every paying customer on the
 //     next restart/sleep — exactly the failure this module is built to avoid.
 //   - The Twitch<->Stripe identity link lives in Stripe itself, as
-//     `metadata.twitch_id` set on the Customer or Subscription when the
-//     captain's Payment Link/Checkout is configured (see README). This module
-//     never writes to Stripe — every call it makes is a read (webhook
-//     verification is pure crypto; reconciliation is a Search/Get call).
+//     `metadata.twitch_id` set on the Subscription. Normally the captain's
+//     Payment Link/Checkout config puts it there directly (see README). The
+//     one exception: `client_reference_id` (Checkout's own field for "who is
+//     this") lives ONLY on the Checkout Session, which reconcile() can never
+//     re-query later — so on `checkout.session.completed` this module makes
+//     its one and only write, copying that id onto the Subscription's
+//     `metadata.twitch_id` via createSubscriptionMetadataWriter. That write
+//     is what makes the link durable in Stripe instead of dying with the
+//     in-memory cache on the next restart/sleep. Every other call this module
+//     makes is a read (webhook verification is pure crypto; reconciliation is
+//     a Search/Get call).
 //   - A short-lived in-memory cache, keyed by Twitch id, is kept warm by
 //     Stripe webhooks (applyStripeEvent) so the common case (token renewal
 //     for someone already seen) needs no network call at all.
@@ -123,7 +130,7 @@ async function extractTwitchId(event, { fetchCustomerMetadata } = {}) {
 // entry lapses past its grace window — so the Stripe-unreachable fallback
 // in isEntitled() can tell "a known subscriber who's lapsed" apart from "a
 // Twitch id we've only ever confirmed as NOT entitled".
-function createEntitlementStore({ graceMs, now = Date.now, fetchCustomerMetadata, reconcile } = {}) {
+function createEntitlementStore({ graceMs, now = Date.now, fetchCustomerMetadata, reconcile, writeSubscriptionMetadata } = {}) {
   if (!(graceMs > 0)) throw new Error("graceMs required");
   const cache = new Map();
 
@@ -169,6 +176,30 @@ function createEntitlementStore({ graceMs, now = Date.now, fetchCustomerMetadata
       case "invoice.payment_failed":
         lapse(twitchId, "webhook");
         break;
+      case "checkout.session.completed": {
+        const session = event.data.object;
+        // Only client_reference_id needs a durable write: if metadata.twitch_id
+        // is already on the Session, the captain configured Stripe to carry it
+        // onto the Subscription directly (see README "Identity linking"), so
+        // there's nothing this module needs to persist itself.
+        const viaClientReferenceId = typeof session.client_reference_id === "string" &&
+          session.client_reference_id &&
+          !(session.metadata && typeof session.metadata.twitch_id === "string" && session.metadata.twitch_id);
+        const subscriptionId = typeof session.subscription === "string"
+          ? session.subscription
+          : (session.subscription && session.subscription.id);
+        if (viaClientReferenceId && subscriptionId && writeSubscriptionMetadata) {
+          try {
+            await writeSubscriptionMetadata(subscriptionId, twitchId);
+          } catch {
+            // Write failed — reconcile() has nothing new to find for this
+            // subscriber. Same failure mode this module already had before
+            // this write existed; no retry loop here, self-heals only if a
+            // later Stripe event/action re-triggers this same code path.
+          }
+        }
+        break;
+      }
       default:
         // Unhandled event type — ignored, not an error (Stripe sends many
         // event types this relay doesn't care about).
@@ -205,7 +236,9 @@ function createEntitlementStore({ graceMs, now = Date.now, fetchCustomerMetadata
   return { applyStripeEvent, isEntitled };
 }
 
-// ---- Stripe API helpers (read-only; never create/update anything) ----
+// ---- Stripe API helpers ----
+// All read-only (search/get) except createSubscriptionMetadataWriter below,
+// this module's one deliberate, narrowly-scoped write.
 function stripeAuthHeader(secretKey) {
   return "Basic " + Buffer.from(secretKey + ":").toString("base64");
 }
@@ -231,6 +264,29 @@ function createStripeReconciler({ secretKey, fetchImpl = fetch, apiBase = "https
   };
 }
 
+// The one write this module performs (see module header). Scoped as
+// narrowly as the Stripe API allows: a single metadata key on a single
+// existing Subscription, via the update-a-subscription endpoint — it cannot
+// create, cancel, or touch billing/price/status on anything. Called only
+// from the checkout.session.completed handler above, only when
+// client_reference_id is the sole source of the identity link.
+function createSubscriptionMetadataWriter({ secretKey, fetchImpl = fetch, apiBase = "https://api.stripe.com/v1" }) {
+  if (!secretKey) throw new Error("secretKey required");
+  return async function writeSubscriptionMetadata(subscriptionId, twitchId) {
+    const url = apiBase + "/subscriptions/" + encodeURIComponent(subscriptionId);
+    const body = "metadata[twitch_id]=" + encodeURIComponent(twitchId);
+    const r = await fetchImpl(url, {
+      method: "POST",
+      headers: {
+        Authorization: stripeAuthHeader(secretKey),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body,
+    });
+    if (!r.ok) throw new Error("stripe subscription metadata write failed: " + r.status);
+  };
+}
+
 // Fallback identity lookup for events whose object has no metadata of its
 // own (mainly Invoice events) but does carry a `customer` id.
 function createCustomerMetadataFetcher({ secretKey, fetchImpl = fetch, apiBase = "https://api.stripe.com/v1" }) {
@@ -252,4 +308,5 @@ module.exports = {
   createEntitlementStore,
   createStripeReconciler,
   createCustomerMetadataFetcher,
+  createSubscriptionMetadataWriter,
 };
