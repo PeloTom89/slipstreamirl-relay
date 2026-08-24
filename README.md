@@ -235,46 +235,56 @@ default TTL) regardless of what happens to the subscription in the meantime.
 
 ### Identity linking: Stripe customer ↔ Twitch id
 
-**What the relay expects:** somewhere on the Stripe object a webhook event
-carries — the Subscription, or (fallback) the Customer it belongs to — a
-`metadata.twitch_id` key holding the streamer's Twitch user id. The relay
-checks, in order: (1) `metadata.twitch_id` directly on the event's object,
-(2) `client_reference_id` on a `checkout.session.completed` event, (3) a
-lookup of the Customer's own `metadata.twitch_id` (for events, mainly
-Invoices, whose object has no metadata of its own but does have a `customer`
-id).
+**What actually works today:** `metadata.twitch_id`, set on the Subscription
+(or, as a fallback lookup, the Customer it belongs to). This is the identity
+mechanism to configure — see below.
+
+**What `extractTwitchId()` in `tools/stripe-entitlement.js` checks, in
+order:** (1) `metadata.twitch_id` directly on the event's object, (2)
+`client_reference_id` on a `checkout.session.completed` event, (3) a lookup
+of the Customer's own `metadata.twitch_id` (for events, mainly Invoices,
+whose object has no metadata of its own but does have a `customer` id).
+**Only (1) and (3) currently take effect.** `applyStripeEvent()`'s
+event-type switch has no case for `checkout.session.completed`, so whatever
+`extractTwitchId()` resolves for path (2) is discarded before it's ever
+cached — confirmed by reading the code, not just a documentation gap. **Do
+not configure a Payment Link to rely on `client_reference_id` alone** until
+this is fixed (tracked separately — it needs a design decision about
+whether the relay may write to Stripe, out of scope for a docs correction).
 
 **What the captain needs to set up in Stripe (not built by this change — see
 "Explicitly out of scope"):** when creating the Payment Link (or Checkout
 Session) customers use to subscribe, attach the subscriber's Twitch id as
-`metadata.twitch_id` on the resulting Subscription or Customer. Two ways to
-do this, in order of how little code they need:
+`metadata.twitch_id` on the resulting Subscription or Customer.
 
-1. **No-code, if your Payment Link supports it:** add a required Custom
-   Field (e.g. "Twitch username or ID") to the Payment Link, then reference
-   it in the Payment Link's own metadata using Stripe's `{{custom_field_key}}`
-   templating syntax, so the field's answer is copied into
-   `metadata.twitch_id` automatically. **Confirm this exact mechanism in your
-   live Stripe Dashboard before relying on it** — this could not be verified
-   without a real account, per this task's constraints (no Stripe account
-   was created, no live Dashboard was used).
-2. **Fallback, if (1) isn't available for your Payment Link type:** use
-   `client_reference_id` as a query parameter on the Payment Link URL
-   (`?client_reference_id=<twitch_id>`), which Stripe does copy onto the
-   resulting Checkout Session. This only appears on `checkout.session.completed`,
-   so it requires whatever page constructs that URL to already know the
-   subscriber's Twitch id — meaningfully more web-surface work than (1), and
-   out of scope of this change (no purchase/checkout page was built here).
+1. **No-code, if your Payment Link supports it — the mechanism to use today:**
+   add a required Custom Field (e.g. "Twitch username or ID") to the Payment
+   Link, then reference it in the Payment Link's own metadata using Stripe's
+   `{{custom_field_key}}` templating syntax, so the field's answer is copied
+   into `metadata.twitch_id` automatically. **Confirm this exact mechanism in
+   your live Stripe Dashboard before relying on it** — this specific
+   Dashboard mechanic still could not be verified without building a real
+   checkout page against it; see "What could not be verified" below.
+2. **`client_reference_id` on the Payment Link URL — carries the signal, but
+   the relay doesn't act on it yet:** appending `?client_reference_id=<twitch_id>`
+   to the Payment Link URL does reach Stripe — verified 2026-08-24 against a
+   real Stripe test checkout, the resulting Checkout Session carried
+   `client_reference_id` exactly as sent. But per the code note above, the
+   relay currently discards this value rather than caching it, so a Payment
+   Link that relies on this alone will never entitle its subscriber, with no
+   error surfaced anywhere. Don't use this as your only identity mechanism
+   until the code gap above is fixed.
 
-Either way, this is genuinely the fiddliest part of this feature and the
-part most likely to need iteration once real Stripe checkout is live — this
-code accepts the identity signal from any of the three lookup paths above
-specifically so it isn't locked into one exact Dashboard mechanism.
+This is genuinely the fiddliest part of this feature. The code was written
+to accept the identity signal from any of the three lookup paths above so it
+isn't locked into one exact Dashboard mechanism, but as shipped only paths
+(1) and (3) are wired all the way through to the entitlement cache.
 
 ### Events handled
 
 | Stripe event | Effect |
 |---|---|
+| `checkout.session.completed` | Not an entitlement change, and — as of this writing — not acted on at all: `applyStripeEvent()` has no case for this event type, so the `client_reference_id` it could carry (see **Identity linking** below) is currently extracted and discarded rather than cached. Subscribe to it anyway (harmless, and needed once this is fixed); don't rely on it yet. |
 | `customer.subscription.created` | Entitles through `current_period_end` + grace, if `status` is `active`/`trialing` |
 | `customer.subscription.updated` | Same as above if entitling; otherwise treated as a lapse (e.g. `past_due`, `unpaid`, `canceled`) |
 | `customer.subscription.deleted` | Lapse — grace period starts now |
@@ -341,15 +351,60 @@ consumes them. Before this works end-to-end, the captain needs to:
    Checkout) in the Stripe Dashboard — the relay never cares what the price is.
 2. Configure that Payment Link/Checkout to attach `metadata.twitch_id` to the
    resulting Subscription or Customer — see **Identity linking** above.
-3. Register a webhook endpoint at `https://<your-relay-url>/stripe-webhook`,
-   subscribed to at least: `customer.subscription.created`,
+3. Register a webhook endpoint (Stripe's dashboard now calls this an "event
+   destination") at `https://<your-relay-url>/stripe-webhook`, subscribed to
+   at least: `checkout.session.completed`, `customer.subscription.created`,
    `customer.subscription.updated`, `customer.subscription.deleted`,
    `invoice.payment_failed`. Copy the signing secret Stripe shows into
-   `STRIPE_WEBHOOK_SECRET`.
+   `STRIPE_WEBHOOK_SECRET`. If Stripe offers a choice of payload ("snapshot"
+   vs "thin"), pick the full/snapshot payload — `tools/stripe-entitlement.js`
+   reads fields directly off `event.data.object`, which a thin payload
+   doesn't include. See [Stripe's webhook
+   docs](https://docs.stripe.com/webhooks) for the current setup flow.
+
+   > **The URL must end in `/stripe-webhook`, exactly.** Pointing the
+   > endpoint at the service root (`/`) instead is a real mistake made while
+   > standing this up, and it fails silently: `/` is the relay's status page,
+   > which returns `200 OK` to *any* request, method included. Stripe sees
+   > every delivery "succeed" (`pending_webhooks: 0`, no retries), the
+   > dashboard shows a healthy endpoint, and no event is ever actually
+   > processed. There is no error anywhere to notice — after registering the
+   > endpoint, trigger a test event and confirm in `tools/stripe-entitlement.js`
+   > or the relay's logs that it was actually parsed, not just that Stripe's
+   > dashboard is green.
+
+   `checkout.session.completed` is listed above but currently inert — see
+   **Identity linking** below before assuming subscribing to it is enough.
 4. Set `STRIPE_SECRET_KEY` to a **secret** (not publishable) API key.
-5. Confirm the grace period default above, and the identity-linking mechanism
-   in (2) against your live Dashboard — both are flagged in this README as
-   unverified without a real Stripe account.
+5. Confirm the grace period default above against your live Dashboard — it's
+   still flagged in this README as unconfirmed by the captain.
+
+### Confirmed 2026-08-24 against a real Stripe test account + deployed Render service
+
+- A real `checkout.session.completed` event carries `client_reference_id`
+  intact, exactly as appended to the Payment Link URL.
+- Stripe delivered both `checkout.session.completed` and
+  `customer.subscription.created` to the deployed `/stripe-webhook` endpoint
+  and reported both accepted (`pending_webhooks: 0`, no retries) — this also
+  confirms signature verification succeeds against a genuine
+  `STRIPE_WEBHOOK_SECRET`, not just against test fixtures.
+- A forged webhook — both a fabricated `Stripe-Signature` header and a
+  request with no signature header at all — is rejected by the live
+  deployment with `400 bad signature`.
+- `POST /channel-token` refuses a request that merely claims a Twitch id: it
+  requires a `twitchAccessToken` and verifies it against Twitch before
+  issuing anything.
+
+**Not verified: the full grant path.** Whether an actually-entitled user
+receives a working channel token end-to-end has NOT been observed — that
+needs a real Twitch access token from the app, which wasn't available during
+this pass. Don't read the bullets above as end-to-end proof that entitlement
+grants work; they confirm the webhook plumbing and signature verification,
+not the full flow.
+
+This pass also turned one prior "unverified" item into a known bug: see
+**Identity linking** above for why `client_reference_id` doesn't reach
+entitlement in the current code, despite Stripe carrying it correctly.
 
 ### What could not be verified without a live Stripe account
 

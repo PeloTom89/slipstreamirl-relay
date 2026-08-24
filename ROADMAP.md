@@ -84,9 +84,18 @@ auto-provisioning, distribution, privacy policy, phasing).
       Twitch↔Stripe identity link; the grace-period model). Tested without
       live Stripe credentials, against fixtures shaped like Stripe's
       documented event/signature scheme (`tools/stripe-entitlement.test.mjs`,
-      `tools/relay-entitlement.test.mjs`) — a few specifics (exact Payment
-      Link Dashboard mechanics, real webhook delivery behavior) are flagged
-      in README.md as unverified until the captain has a live account.
+      `tools/relay-entitlement.test.mjs`). Since then, real webhook delivery
+      and signature verification (including forged-signature rejection) were
+      confirmed 2026-08-24 against a live Stripe test account and deployed
+      Render service — see README.md "Stripe entitlement" → "Confirmed
+      2026-08-24…". That pass also surfaced a real bug, not yet fixed:
+      `applyStripeEvent()` has no case for `checkout.session.completed`, so
+      the `client_reference_id` identity signal it reads is currently
+      discarded rather than cached — the metadata-template mechanism is the
+      only identity link that actually works today. The exact Payment Link
+      Dashboard mechanics for that metadata-template mechanism, and the full
+      grant path (an entitled user actually receiving a channel token), are
+      still unverified.
 - [x] **Multi-tenant relay, opt-in mode** — see the "Big bet" section above and
       README.md "Multi-tenant mode". `broadcast()`/`emit()` now take an
       explicit `channel` state bundle instead of closing over module-level

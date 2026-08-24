@@ -62,6 +62,19 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   and `POST /stripe-webhook` end-to-end without live Twitch or Stripe
   credentials. Don't document these in README.md's captain-facing env var
   tables — they're not something he ever needs to set.
+- **Known gap, confirmed by reading the code (not yet fixed):**
+  `tools/stripe-entitlement.js`'s `applyStripeEvent()` event-type switch has
+  no case for `checkout.session.completed`. `extractTwitchId()` can read
+  `client_reference_id` off that event fine (and is unit-tested doing so),
+  but `applyStripeEvent()` discards the result rather than caching it — so
+  the `client_reference_id` Payment-Link-URL identity mechanism documented
+  in README.md "Identity linking" does not currently reach entitlement at
+  all, despite Stripe carrying the value correctly end-to-end (verified
+  2026-08-24 against a live test account). The `metadata.twitch_id`
+  custom-field/template mechanism is the only identity link that actually
+  works today. Fixing this needs a product decision (whether the relay may
+  write `metadata.twitch_id` back to Stripe once it learns it from
+  `client_reference_id`) — don't silently "fix" this as a drive-by edit.
 
 ## Maintaining this file
 
