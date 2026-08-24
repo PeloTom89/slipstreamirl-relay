@@ -297,11 +297,13 @@ confirming once real checkout traffic exists.
 
 ### What happens if Stripe is unreachable
 
-Only affects `POST /channel-token` (renewal), never a live ride. If a cache
-entry exists for that Twitch id (even one past its grace window), the relay
-trusts it rather than guessing — a transient Stripe outage shouldn't cut off
-someone who was already a known subscriber. If the Twitch id has never been
-seen at all, the request is refused (503) rather than inventing an answer.
+Only affects `POST /channel-token` (renewal), never a live ride. If that
+Twitch id has ever been positively confirmed entitled before (even if that's
+since lapsed past its grace window), the relay trusts that rather than
+guessing — a transient Stripe outage shouldn't cut off someone who was
+already a known subscriber. If the Twitch id has never been seen at all, or
+has only ever been confirmed NOT entitled, the request is refused (403 "not
+entitled") rather than inventing an answer.
 
 ### Grace period
 

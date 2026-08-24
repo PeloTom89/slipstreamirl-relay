@@ -214,6 +214,25 @@ describe("createEntitlementStore", () => {
     assert.equal(await store.isEntitled("never-seen"), false);
   });
 
+  test("Stripe unreachable during reconciliation, with a prior confirmed-NOT-entitled cache entry: still refused", async () => {
+    let unreachable = false;
+    const store = createEntitlementStore({
+      graceMs: GRACE_MS,
+      now: () => 1_000_000_000_000,
+      reconcile: async () => {
+        if (unreachable) throw new Error("stripe unreachable");
+        return { entitled: false, periodEndSeconds: null };
+      },
+    });
+    assert.equal(await store.isEntitled("never-a-subscriber"), false, "first reconcile confirms not entitled");
+    unreachable = true;
+    assert.equal(
+      await store.isEntitled("never-a-subscriber"),
+      false,
+      "a prior confirmed-negative determination must not be trusted as if it were positive"
+    );
+  });
+
   test("an unresolvable event (no twitch id anywhere) is dropped without throwing", async () => {
     const store = createEntitlementStore({ graceMs: GRACE_MS, now: () => 1_000_000_000_000 });
     await store.applyStripeEvent({ type: "customer.subscription.created", data: { object: { status: "active" } } });

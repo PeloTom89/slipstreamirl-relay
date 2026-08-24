@@ -116,8 +116,13 @@ async function extractTwitchId(event, { fetchCustomerMetadata } = {}) {
 }
 
 // ---- Entitlement cache ----
-// One entry per Twitch id: { entitledUntilMs, source }. `source` is only for
-// debugging/observability, never read for a decision.
+// One entry per Twitch id: { entitledUntilMs, source, everEntitled }.
+// `source` is only for debugging/observability, never read for a decision.
+// `everEntitled` records whether this id has ever been positively confirmed
+// entitled (webhook or reconcile) — once true it stays true, even once the
+// entry lapses past its grace window — so the Stripe-unreachable fallback
+// in isEntitled() can tell "a known subscriber who's lapsed" apart from "a
+// Twitch id we've only ever confirmed as NOT entitled".
 function createEntitlementStore({ graceMs, now = Date.now, fetchCustomerMetadata, reconcile } = {}) {
   if (!(graceMs > 0)) throw new Error("graceMs required");
   const cache = new Map();
@@ -125,7 +130,7 @@ function createEntitlementStore({ graceMs, now = Date.now, fetchCustomerMetadata
   function extend(twitchId, untilMs, source) {
     const existing = cache.get(twitchId);
     const merged = Math.max(untilMs, existing ? existing.entitledUntilMs : -Infinity);
-    cache.set(twitchId, { entitledUntilMs: merged, source });
+    cache.set(twitchId, { entitledUntilMs: merged, source, everEntitled: true });
   }
 
   // A lapse signal (payment failure, cancellation, non-entitling status)
@@ -141,7 +146,7 @@ function createEntitlementStore({ graceMs, now = Date.now, fetchCustomerMetadata
     const capped = nowMs + graceMs;
     const existing = cache.get(twitchId);
     const untilMs = existing ? Math.min(existing.entitledUntilMs, capped) : capped;
-    cache.set(twitchId, { entitledUntilMs: untilMs, source });
+    cache.set(twitchId, { entitledUntilMs: untilMs, source, everEntitled: existing ? existing.everEntitled : false });
   }
 
   async function applyStripeEvent(event) {
@@ -180,18 +185,20 @@ function createEntitlementStore({ graceMs, now = Date.now, fetchCustomerMetadata
       const result = await reconcile(twitchId);
       if (result && result.entitled) {
         const baseMs = result.periodEndSeconds ? result.periodEndSeconds * 1000 : nowMs;
-        cache.set(twitchId, { entitledUntilMs: baseMs + graceMs, source: "reconcile" });
+        cache.set(twitchId, { entitledUntilMs: baseMs + graceMs, source: "reconcile", everEntitled: true });
         return true;
       }
-      cache.set(twitchId, { entitledUntilMs: nowMs - 1, source: "reconcile" });
+      cache.set(twitchId, { entitledUntilMs: nowMs - 1, source: "reconcile", everEntitled: cached ? cached.everEntitled : false });
       return false;
     } catch {
       // Stripe unreachable. Degrade toward whatever we already knew rather
-      // than guessing from nothing: if we've ever seen this Twitch id before
-      // (even past its grace window), keep trusting that during the outage;
-      // a Twitch id we've never seen at all gets denied, since there is
-      // nothing to trust. See README "Stripe entitlement" for the tradeoff.
-      return !!cached;
+      // than guessing from nothing: if this Twitch id has ever been
+      // positively confirmed entitled before (even if that's since lapsed
+      // past its grace window), keep trusting that during the outage; a
+      // Twitch id we've only ever confirmed as NOT entitled — or never seen
+      // at all — gets denied, since there is nothing to trust. See README
+      // "Stripe entitlement" for the tradeoff.
+      return !!(cached && cached.everEntitled);
     }
   }
 
