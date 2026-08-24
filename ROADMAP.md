@@ -42,9 +42,10 @@ token model).
       unless a Stripe subscription is active (or within its grace period) for
       that Twitch id. Stripe is the sole source of truth (no durable local
       store — see README.md "Stripe entitlement" for why, given Render's free
-      plan). Handles `customer.subscription.created/updated/deleted` and
-      `invoice.payment_failed`; webhook signature verification is
-      security-critical and covered by `tools/stripe-entitlement.test.mjs`
+      plan). Handles `customer.subscription.created/updated/deleted`,
+      `invoice.payment_failed`, and `checkout.session.completed`; webhook
+      signature verification is security-critical and covered by
+      `tools/stripe-entitlement.test.mjs`
       and `tools/relay-entitlement.test.mjs`. Grace period
       (`ENTITLEMENT_GRACE_SECONDS`, default 3 days) is a placeholder default —
       **the captain still needs to confirm this value.** Never a live check on

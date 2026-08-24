@@ -244,4 +244,133 @@ describe("createEntitlementStore", () => {
     await store.applyStripeEvent({ type: "customer.created", data: { object: { metadata: { twitch_id: "streamer-i" } } } });
     assert.equal(await store.isEntitled("streamer-i"), false);
   });
+
+  function checkoutEvent({ clientReferenceId, sessionMetadataTwitchId, subscription }) {
+    return {
+      type: "checkout.session.completed",
+      data: {
+        object: {
+          client_reference_id: clientReferenceId,
+          metadata: sessionMetadataTwitchId ? { twitch_id: sessionMetadataTwitchId } : undefined,
+          subscription,
+        },
+      },
+    };
+  }
+
+  describe("checkout.session.completed identity write", () => {
+    test("client_reference_id triggers a scoped write of metadata.twitch_id onto the Subscription", async () => {
+      const writes = [];
+      const store = createEntitlementStore({
+        graceMs: GRACE_MS,
+        now: () => 1_000_000_000_000,
+        writeSubscriptionMetadata: async (subscriptionId, twitchId) => { writes.push({ subscriptionId, twitchId }); },
+      });
+      await store.applyStripeEvent(checkoutEvent({ clientReferenceId: "streamer-j", subscription: "sub_123" }));
+      assert.deepEqual(writes, [{ subscriptionId: "sub_123", twitchId: "streamer-j" }]);
+    });
+
+    test("no write when the session already carries metadata.twitch_id directly (captain configured the template mechanism)", async () => {
+      const writes = [];
+      const store = createEntitlementStore({
+        graceMs: GRACE_MS,
+        now: () => 1_000_000_000_000,
+        writeSubscriptionMetadata: async (...args) => { writes.push(args); },
+      });
+      await store.applyStripeEvent(checkoutEvent({ clientReferenceId: "streamer-k", sessionMetadataTwitchId: "streamer-k", subscription: "sub_456" }));
+      assert.deepEqual(writes, []);
+    });
+
+    test("no write when the session has no subscription id (e.g. one-time payment, not subscription mode)", async () => {
+      const writes = [];
+      const store = createEntitlementStore({
+        graceMs: GRACE_MS,
+        now: () => 1_000_000_000_000,
+        writeSubscriptionMetadata: async (...args) => { writes.push(args); },
+      });
+      await store.applyStripeEvent(checkoutEvent({ clientReferenceId: "streamer-l", subscription: undefined }));
+      assert.deepEqual(writes, []);
+    });
+
+    test("no write when no writeSubscriptionMetadata dependency is configured", async () => {
+      const store = createEntitlementStore({ graceMs: GRACE_MS, now: () => 1_000_000_000_000 });
+      // Must not throw even though writeSubscriptionMetadata is undefined.
+      await store.applyStripeEvent(checkoutEvent({ clientReferenceId: "streamer-m", subscription: "sub_789" }));
+    });
+
+    test("a write failure is swallowed, not thrown, and does not itself grant entitlement", async () => {
+      const store = createEntitlementStore({
+        graceMs: GRACE_MS,
+        now: () => 1_000_000_000_000,
+        writeSubscriptionMetadata: async () => { throw new Error("stripe unreachable"); },
+      });
+      await store.applyStripeEvent(checkoutEvent({ clientReferenceId: "streamer-n", subscription: "sub_000" }));
+      assert.equal(await store.isEntitled("streamer-n"), false);
+    });
+
+    test("the write is scoped to exactly one subscription id and one twitch id — never induced to write anything else", async () => {
+      const calls = [];
+      const store = createEntitlementStore({
+        graceMs: GRACE_MS,
+        now: () => 1_000_000_000_000,
+        writeSubscriptionMetadata: async (subscriptionId, twitchId) => { calls.push({ subscriptionId, twitchId }); },
+      });
+      // A malicious/odd event object can't smuggle extra fields into the write call —
+      // writeSubscriptionMetadata only ever receives the two positional args below.
+      await store.applyStripeEvent({
+        type: "checkout.session.completed",
+        data: {
+          object: {
+            client_reference_id: "streamer-o",
+            subscription: "sub_o",
+            customer: "cus_should_be_ignored",
+            amount_total: 999999,
+          },
+        },
+      });
+      assert.equal(calls.length, 1);
+      assert.deepEqual(Object.keys(calls[0]).sort(), ["subscriptionId", "twitchId"]);
+      assert.deepEqual(calls[0], { subscriptionId: "sub_o", twitchId: "streamer-o" });
+    });
+  });
+
+  describe("restart safety: identity link written at checkout survives a full process restart", () => {
+    test("subscribes, discards ALL in-memory state (simulating a Render sleep/restart), and still resolves entitled from Stripe alone", async () => {
+      // Simulates Stripe's own durable state — nothing this test controls
+      // directly, standing in for what createSubscriptionMetadataWriter would
+      // have actually written via the real Stripe API.
+      const stripeSubscriptions = new Map();
+      stripeSubscriptions.set("sub_p", { status: "active", periodEndSeconds: 1_000_003_600, metadataTwitchId: null });
+
+      let clock = 1_000_000_000_000;
+      const preRestartStore = createEntitlementStore({
+        graceMs: GRACE_MS,
+        now: () => clock,
+        writeSubscriptionMetadata: async (subscriptionId, twitchId) => {
+          const sub = stripeSubscriptions.get(subscriptionId);
+          sub.metadataTwitchId = twitchId;
+        },
+      });
+
+      // Checkout completes: client_reference_id resolves the id, and the
+      // write lands on Stripe's (simulated) subscription record.
+      await preRestartStore.applyStripeEvent(checkoutEvent({ clientReferenceId: "streamer-p", subscription: "sub_p" }));
+      assert.equal(stripeSubscriptions.get("sub_p").metadataTwitchId, "streamer-p", "identity link must be durably on the Subscription before restart");
+
+      // --- restart: preRestartStore and its in-memory cache are discarded. ---
+      // A brand-new store is built, with only reconcile() wired up (as
+      // server.js does on boot) — no cache entries carried over.
+      const postRestartStore = createEntitlementStore({
+        graceMs: GRACE_MS,
+        now: () => clock,
+        reconcile: async (twitchId) => {
+          const sub = [...stripeSubscriptions.values()].find((s) => s.metadataTwitchId === twitchId);
+          if (!sub) return { entitled: false, periodEndSeconds: null };
+          return { entitled: sub.status === "active" || sub.status === "trialing", periodEndSeconds: sub.periodEndSeconds };
+        },
+      });
+
+      assert.equal(await postRestartStore.isEntitled("streamer-p"), true, "already-subscribed user must still resolve as entitled after a full restart");
+    });
+  });
 });

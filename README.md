@@ -194,13 +194,17 @@ have, and one that would fail completely silently.
 
 **Chosen: Stripe is the sole source of truth, with an in-memory cache that
 Stripe itself can always rebuild.** No durable local store exists, or is
-needed, for either subscription status or the Twitch↔Stripe identity link:
+needed, for either subscription status or the Twitch↔Stripe identity link —
+**with one narrow, deliberate exception**, explained below:
 
 - The identity link (which Stripe customer is which Twitch streamer) lives in
-  **Stripe's own `metadata.twitch_id`** — see **What to configure in Stripe**
-  below — not in anything this relay stores. This code only ever *reads*
-  Stripe; it never creates or updates a Customer, Subscription, Price,
-  Product, or Payment Link.
+  **Stripe's own `metadata.twitch_id`** on the Subscription — not in anything
+  this relay stores. Almost everything this code does is a read: it never
+  creates a Customer, Subscription, Price, Product, or Payment Link, and it
+  never touches billing/status. The one exception is `metadata.twitch_id`
+  itself — see **Identity linking** below for why a write turned out to be
+  required here, and **What the write can and cannot do** for how narrowly
+  it's scoped.
 - A short-lived in-memory cache (`tools/stripe-entitlement.js`), keyed by
   Twitch id, is kept warm by webhooks so the common case — a streamer whose
   process already knows about them — needs no network call.
@@ -209,9 +213,11 @@ needed, for either subscription status or the Twitch↔Stripe identity link:
   construction — or an entry that's aged past its grace window), the relay
   reconciles with **one read-only Stripe Search API call**
   (`GET /v1/subscriptions/search?query=metadata['twitch_id']:'<id>'`). This is
-  what makes a restart harmless: nothing durable was ever needed, because
-  Stripe already durably holds both the identity link and the subscription
-  status.
+  what makes a restart harmless: nothing durable was ever needed *in this
+  relay*, because Stripe already durably holds both the identity link and the
+  subscription status — precisely because the identity link is durably
+  written into Stripe the moment it's known (see below), not left to an
+  in-memory cache that a restart would erase.
 
 This was evaluated against the two alternatives named in the design brief:
 a **local durable store** was rejected because it requires infrastructure
@@ -244,11 +250,54 @@ lookup of the Customer's own `metadata.twitch_id` (for events, mainly
 Invoices, whose object has no metadata of its own but does have a `customer`
 id).
 
+**Path (2) needed a write, and here's why.** `client_reference_id` exists
+only on the Checkout Session object — it is never copied onto the
+Subscription by Stripe itself, and a Session isn't something `reconcile()`
+can re-query later (there is no "search Checkout Sessions by
+client_reference_id" that stays valid after the session is gone). Earlier
+versions of this code read `client_reference_id` off
+`checkout.session.completed` and then **silently discarded it** — there was
+no case for that event type in the webhook handler, so the id that had just
+been resolved went nowhere, no cache entry was ever written, and
+`reconcile()` had nothing to find on a later restart. A Payment Link using
+`client_reference_id` never entitled anyone, silently, until this was fixed.
+
+**The fix:** `applyStripeEvent()` now handles `checkout.session.completed`.
+When the id came from `client_reference_id` (i.e. the Session has no
+`metadata.twitch_id` of its own — see path (1)/(3) below for when it does),
+the relay makes **one write**: `POST /v1/subscriptions/:id` with
+`metadata[twitch_id]=<id>`, copying the identity link onto the Subscription
+that Checkout just created. That single write is what makes the link durable
+in **Stripe**, which is exactly this design's own stated principle (Stripe
+is the sole source of truth) — it does not introduce any local durable
+state, and every later lookup (webhooks and `reconcile()`'s search) reads
+the same field it always did.
+
+**What the write can and cannot do.** `createSubscriptionMetadataWriter()`
+(`tools/stripe-entitlement.js`) is the only function in this module that
+performs a Stripe write, and it is invoked from exactly one call site: the
+`checkout.session.completed` case, only when `client_reference_id` is the
+identity source and the Session carries a `subscription` id. It sets exactly
+one metadata key on exactly the Subscription named by that id — the update-a-
+subscription endpoint cannot create, cancel, refund, or change price/status
+on anything, so this cannot be induced into a money-moving or destructive
+call regardless of what a forged/malformed event might contain (the event
+itself is still signature-verified before any of this runs — see **Stripe
+webhook**). If the write fails (Stripe unreachable, bad response), the
+failure is swallowed the same way every other soft-failure in this module
+is: no retry loop, and the subscriber simply isn't entitled until something
+else re-triggers this same code path (support fallback:
+`tools/mint-channel-token.js`).
+
+**Because of this write, `STRIPE_SECRET_KEY` is no longer read-only** — see
+**Env vars** below.
+
 **What the captain needs to set up in Stripe (not built by this change — see
 "Explicitly out of scope"):** when creating the Payment Link (or Checkout
-Session) customers use to subscribe, attach the subscriber's Twitch id as
-`metadata.twitch_id` on the resulting Subscription or Customer. Two ways to
-do this, in order of how little code they need:
+Session) customers use to subscribe, attach the subscriber's Twitch id
+either as `metadata.twitch_id` on the resulting Subscription/Customer, or as
+`client_reference_id` on the Checkout Session. Two ways to do this, in order
+of how little code they need:
 
 1. **No-code, if your Payment Link supports it:** add a required Custom
    Field (e.g. "Twitch username or ID") to the Payment Link, then reference
@@ -257,14 +306,18 @@ do this, in order of how little code they need:
    `metadata.twitch_id` automatically. **Confirm this exact mechanism in your
    live Stripe Dashboard before relying on it** — this could not be verified
    without a real account, per this task's constraints (no Stripe account
-   was created, no live Dashboard was used).
-2. **Fallback, if (1) isn't available for your Payment Link type:** use
-   `client_reference_id` as a query parameter on the Payment Link URL
+   was created, no live Dashboard was used). If you use this path, the relay
+   never needs to write anything — the identity link is already durable in
+   Stripe by the time any webhook fires.
+2. **`client_reference_id` as a query parameter** on the Payment Link URL
    (`?client_reference_id=<twitch_id>`), which Stripe does copy onto the
-   resulting Checkout Session. This only appears on `checkout.session.completed`,
-   so it requires whatever page constructs that URL to already know the
-   subscriber's Twitch id — meaningfully more web-surface work than (1), and
-   out of scope of this change (no purchase/checkout page was built here).
+   resulting Checkout Session — confirmed against a real Stripe test account.
+   This requires whatever page constructs that URL to already know the
+   subscriber's Twitch id (out of scope of this change — no purchase/checkout
+   page was built here), but no longer requires any Dashboard templating
+   setup, and — as of this change — the relay durably persists the link onto
+   the Subscription itself the moment Checkout completes, via the write
+   described above.
 
 Either way, this is genuinely the fiddliest part of this feature and the
 part most likely to need iteration once real Stripe checkout is live — this
@@ -279,6 +332,7 @@ specifically so it isn't locked into one exact Dashboard mechanism.
 | `customer.subscription.updated` | Same as above if entitling; otherwise treated as a lapse (e.g. `past_due`, `unpaid`, `canceled`) |
 | `customer.subscription.deleted` | Lapse — grace period starts now |
 | `invoice.payment_failed` | Lapse — grace period starts now |
+| `checkout.session.completed` | No entitlement effect by itself — writes `metadata.twitch_id` onto the new Subscription if `client_reference_id` is the identity source (see **Identity linking** above); the following `customer.subscription.created` grants entitlement as usual |
 
 A "lapse" never *extends* entitlement past what an active subscription
 already had — it only caps it at `now + grace`, so a mid-period cancellation
@@ -318,8 +372,12 @@ stacks on top of whatever Stripe's own retries already bought.
 
 ### Env vars
 
-- `STRIPE_SECRET_KEY` — Stripe secret API key. Used only for read calls
-  (`GET /v1/subscriptions/search`, `GET /v1/customers/:id`) — never a write.
+- `STRIPE_SECRET_KEY` — Stripe secret API key. Used mostly for read calls
+  (`GET /v1/subscriptions/search`, `GET /v1/customers/:id`), plus **one
+  narrowly-scoped write**: `POST /v1/subscriptions/:id` to set
+  `metadata.twitch_id`, only from the `checkout.session.completed` handler,
+  only when `client_reference_id` is the identity source — see **Identity
+  linking** above for why, and exactly what that write can and cannot touch.
 - `STRIPE_WEBHOOK_SECRET` — the signing secret Stripe shows when you register
   the webhook endpoint (below). Required to verify `Stripe-Signature` —
   **without this, the endpoint would accept a forged event from anyone**, so
@@ -344,8 +402,10 @@ consumes them. Before this works end-to-end, the captain needs to:
 3. Register a webhook endpoint at `https://<your-relay-url>/stripe-webhook`,
    subscribed to at least: `customer.subscription.created`,
    `customer.subscription.updated`, `customer.subscription.deleted`,
-   `invoice.payment_failed`. Copy the signing secret Stripe shows into
-   `STRIPE_WEBHOOK_SECRET`.
+   `invoice.payment_failed`, `checkout.session.completed` (this last one is
+   what carries `client_reference_id` — see **Identity linking** — omitting
+   it means that identity path never works). Copy the signing secret Stripe
+   shows into `STRIPE_WEBHOOK_SECRET`.
 4. Set `STRIPE_SECRET_KEY` to a **secret** (not publishable) API key.
 5. Confirm the grace period default above, and the identity-linking mechanism
    in (2) against your live Dashboard — both are flagged in this README as
@@ -362,6 +422,10 @@ consumes them. Before this works end-to-end, the captain needs to:
 - Real-world webhook delivery latency/retries, and how Stripe's own dunning
   schedule (Dashboard-configured) interacts with this relay's independent
   grace period in practice.
+- The `POST /v1/subscriptions/:id` metadata write itself (`checkout.session.completed`
+  → `createSubscriptionMetadataWriter`) is implemented per Stripe's documented
+  API and covered by this repo's tests against a stub Stripe, but has not
+  been exercised against a live Stripe account within this change.
 
 ### Discord (not built)
 

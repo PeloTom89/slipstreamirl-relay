@@ -39,6 +39,7 @@ const {
   createEntitlementStore,
   createStripeReconciler,
   createCustomerMetadataFetcher,
+  createSubscriptionMetadataWriter,
 } = require("./tools/stripe-entitlement.js");
 
 const PORT = process.env.PORT || 8080;
@@ -76,6 +77,7 @@ const entitlementStore = (MULTI_TENANT && STRIPE_SECRET_KEY && STRIPE_WEBHOOK_SE
       graceMs: ENTITLEMENT_GRACE_SECONDS * 1000,
       fetchCustomerMetadata: createCustomerMetadataFetcher({ secretKey: STRIPE_SECRET_KEY, apiBase: STRIPE_API_BASE }),
       reconcile: createStripeReconciler({ secretKey: STRIPE_SECRET_KEY, apiBase: STRIPE_API_BASE }),
+      writeSubscriptionMetadata: createSubscriptionMetadataWriter({ secretKey: STRIPE_SECRET_KEY, apiBase: STRIPE_API_BASE }),
     })
   : null;
 
