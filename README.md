@@ -406,6 +406,21 @@ consumes them. Before this works end-to-end, the captain needs to:
    what carries `client_reference_id` — see **Identity linking** — omitting
    it means that identity path never works). Copy the signing secret Stripe
    shows into `STRIPE_WEBHOOK_SECRET`.
+
+   > **⚠️ The URL must end in `/stripe-webhook`, not the bare root.** The
+   > relay's root path is its status page, which returns `200 OK` to any
+   > request — including Stripe's. Point the endpoint at the root by mistake
+   > and Stripe will report every delivery as successful (`pending_webhooks`
+   > stays 0, no retries queued, dashboard looks healthy) while the relay
+   > processes nothing and entitlement silently never works, with no error
+   > surfaced anywhere. This is a real incident that happened while wiring up
+   > a live test account, not a hypothetical.
+   >
+   > To confirm the endpoint is right, send it an unsigned request: a correctly
+   > configured `/stripe-webhook` endpoint **rejects** it with `400 bad
+   > signature`. A misrouted endpoint pointed at the root instead returns `200`
+   > and the relay's status text. That difference is the reliable way to tell
+   > them apart, and it's been verified live against the deployed service.
 4. Set `STRIPE_SECRET_KEY` to a **secret** (not publishable) API key.
 5. Confirm the grace period default above, and the identity-linking mechanism
    in (2) against your live Dashboard — both are flagged in this README as
