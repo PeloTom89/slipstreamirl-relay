@@ -53,6 +53,36 @@ token model).
       **Still open:** Discord as a second, OR'd entitlement source (explicitly
       out of scope of the change that added Stripe — see README.md "Discord
       (not built)").
+- [x] **Beta allowlist** — `BETA_ALLOWLIST_TWITCH_IDS` (comma-separated Twitch
+      ids) bypasses the *payment* check only, not identity verification, so
+      the captain's TestFlight testers can use hosted mode without a Stripe
+      subscription while it's still an internal beta. Empty/absent by
+      default, only reachable when Stripe entitlement is otherwise configured,
+      and visible (logged per token issuance, counted on the root status
+      line) rather than a silent bypass — see README.md "Beta allowlist".
+      **Still open:** clearing the list before hosted relay goes
+      subscription-only for real is a manual step the captain has to
+      remember; nothing in code expires or nags about it.
+- [x] **Beta allowlist, remote source (no redeploy to add a tester)** —
+      `BETA_ALLOWLIST_REMOTE_URL` (`tools/beta-allowlist-remote.js`) polls a
+      URL (Gist raw link is the intended use) for additional allowlisted ids,
+      merged with `BETA_ALLOWLIST_TWITCH_IDS`; editing the source takes
+      effect on the next poll (default every 5 minutes,
+      `BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS`) with no env var change and
+      therefore no Render redeploy (a redeploy drops connections and clears
+      in-memory ride state, which is exactly what this exists to avoid). A
+      fetch failure, non-2xx, or a response that parses to zero valid ids
+      keeps the last known good list rather than wiping it — see README.md
+      "Adding a tester without a redeploy" for the full failure-handling
+      design and why an empty/garbage response can't silently revoke every
+      beta tester. Root status line and logging extended to cover the merged
+      list and whether the remote source is currently `ok`/`stale`/
+      `never-fetched`.
+      **Still open:** same as above (clearing the allowlist before going
+      live is manual); also, there's no way to *fully* clear remote-granted
+      access down to zero without a redeploy (unsetting
+      `BETA_ALLOWLIST_REMOTE_URL`) — deliberate, per the "never silently
+      revoke everyone" design, but worth the captain knowing.
 - [ ] **Scaling** — Render always-on; if multi-instance, Redis pub/sub to share
       rooms across instances (WebSocket fan-out). Still premature per the
       multi-tenant design doc's cost/scale analysis — single-instance covers

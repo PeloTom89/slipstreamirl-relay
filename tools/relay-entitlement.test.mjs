@@ -291,6 +291,389 @@ describe("checkout.session.completed identity write, end-to-end (real HTTP to a 
   });
 });
 
+describe("beta allowlist (BETA_ALLOWLIST_TWITCH_IDS)", () => {
+  const JWT_SECRET = "test-jwt-secret";
+  const WEBHOOK_SECRET = "whsec_test";
+  const STRIPE_KEY = "sk_test_fake";
+  const GRACE_SECONDS = 120;
+
+  let twitchStub, stripeStub, server;
+  let twitchIdToReturn = "streamer-allowlist-1";
+
+  before(async () => {
+    twitchStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      // A sentinel "invalid" token means "no identity resolves" — used to
+      // prove the allowlist can't bypass identity verification.
+      const authHeader = req.headers["authorization"] || "";
+      if (authHeader === "Bearer invalid-token") { res.end(JSON.stringify({ data: [] })); return; }
+      res.end(JSON.stringify({ data: [{ id: twitchIdToReturn }] }));
+    });
+    stripeStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      // No active subscription anywhere — every id here is unentitled by Stripe alone.
+      if (req.url.startsWith("/subscriptions/search")) res.end(JSON.stringify({ data: [] }));
+      else res.end(JSON.stringify({ metadata: {} }));
+    });
+    server = await startServer({
+      MULTI_TENANT: "1",
+      RELAY_JWT_SECRET: JWT_SECRET,
+      STRIPE_SECRET_KEY: STRIPE_KEY,
+      STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      ENTITLEMENT_GRACE_SECONDS: String(GRACE_SECONDS),
+      TWITCH_HELIX_BASE: `http://127.0.0.1:${twitchStub.address().port}`,
+      STRIPE_API_BASE: `http://127.0.0.1:${stripeStub.address().port}`,
+      BETA_ALLOWLIST_TWITCH_IDS: "streamer-allowlist-1, streamer-allowlist-2,, ,streamer-allowlist-3",
+    });
+  });
+
+  after(async () => {
+    await server.stop();
+    await new Promise((r) => twitchStub.close(r));
+    await new Promise((r) => stripeStub.close(r));
+  });
+
+  async function requestToken(twitchAccessToken = "fake-user-access-token") {
+    return fetch(`${server.baseHttp}/channel-token`, {
+      method: "POST",
+      body: JSON.stringify({ twitchAccessToken }),
+    });
+  }
+
+  test("an allowlisted id with a verifiable Twitch identity is granted a token", async () => {
+    twitchIdToReturn = "streamer-allowlist-1";
+    const res = await requestToken();
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.channel, "streamer-allowlist-1");
+    assert.ok(body.token);
+  });
+
+  test("stray commas/whitespace in the allowlist parse to the trimmed ids, not blank entries", async () => {
+    twitchIdToReturn = "streamer-allowlist-3";
+    const res = await requestToken();
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).channel, "streamer-allowlist-3");
+  });
+
+  test("a non-allowlisted, non-subscribed id is still refused (403)", async () => {
+    twitchIdToReturn = "streamer-not-allowlisted";
+    const res = await requestToken();
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).error, "not entitled");
+  });
+
+  test("an allowlisted id WITHOUT a verifiable Twitch identity is still rejected — no identity bypass", async () => {
+    // The stub Helix server treats this sentinel token as "no identity" —
+    // being allowlisted-by-id never substitutes for a verified Twitch token.
+    const res = await requestToken("invalid-token");
+    assert.equal(res.status, 401);
+    assert.equal((await res.json()).error, "could not verify Twitch identity");
+  });
+
+  test("the root status line reports the allowlisted-id count", async () => {
+    const res = await fetch(`${server.baseHttp}/`);
+    const text = await res.text();
+    assert.match(text, /3 beta allowlisted/);
+  });
+});
+
+describe("beta allowlist is empty by default — grants nobody", () => {
+  const JWT_SECRET = "test-jwt-secret";
+  const WEBHOOK_SECRET = "whsec_test";
+  const STRIPE_KEY = "sk_test_fake";
+
+  let twitchStub, stripeStub, server;
+
+  before(async () => {
+    twitchStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "streamer-would-be-allowlisted" }] }));
+    });
+    stripeStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url.startsWith("/subscriptions/search")) res.end(JSON.stringify({ data: [] }));
+      else res.end(JSON.stringify({ metadata: {} }));
+    });
+    // BETA_ALLOWLIST_TWITCH_IDS deliberately a stray-comma/whitespace string,
+    // never a real id, and also tested absent entirely below.
+    server = await startServer({
+      MULTI_TENANT: "1",
+      RELAY_JWT_SECRET: JWT_SECRET,
+      STRIPE_SECRET_KEY: STRIPE_KEY,
+      STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      TWITCH_HELIX_BASE: `http://127.0.0.1:${twitchStub.address().port}`,
+      STRIPE_API_BASE: `http://127.0.0.1:${stripeStub.address().port}`,
+      BETA_ALLOWLIST_TWITCH_IDS: " , ,",
+    });
+  });
+
+  after(async () => {
+    await server.stop();
+    await new Promise((r) => twitchStub.close(r));
+    await new Promise((r) => stripeStub.close(r));
+  });
+
+  test("an allowlist of only stray commas/whitespace grants nobody, including an id that would match a blank entry", async () => {
+    const res = await fetch(`${server.baseHttp}/channel-token`, {
+      method: "POST",
+      body: JSON.stringify({ twitchAccessToken: "fake-user-access-token" }),
+    });
+    assert.equal(res.status, 403);
+  });
+
+  test("the root status line omits the allowlist note entirely when nobody is allowlisted", async () => {
+    const res = await fetch(`${server.baseHttp}/`);
+    const text = await res.text();
+    assert.doesNotMatch(text, /beta allowlisted/);
+  });
+});
+
+describe("beta allowlist absent entirely (existing Stripe entitlement test suite is unaffected)", () => {
+  const JWT_SECRET = "test-jwt-secret";
+  const WEBHOOK_SECRET = "whsec_test";
+  const STRIPE_KEY = "sk_test_fake";
+
+  let twitchStub, stripeStub, server;
+
+  before(async () => {
+    twitchStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "streamer-paying" }] }));
+    });
+    stripeStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      const periodEnd = Math.floor(Date.now() / 1000) + 3600;
+      if (req.url.startsWith("/subscriptions/search")) {
+        res.end(JSON.stringify({ data: [{ status: "active", items: { data: [{ current_period_end: periodEnd }] } }] }));
+      } else {
+        res.end(JSON.stringify({ metadata: {} }));
+      }
+    });
+    server = await startServer({
+      MULTI_TENANT: "1",
+      RELAY_JWT_SECRET: JWT_SECRET,
+      STRIPE_SECRET_KEY: STRIPE_KEY,
+      STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      TWITCH_HELIX_BASE: `http://127.0.0.1:${twitchStub.address().port}`,
+      STRIPE_API_BASE: `http://127.0.0.1:${stripeStub.address().port}`,
+      // BETA_ALLOWLIST_TWITCH_IDS intentionally absent.
+    });
+  });
+
+  after(async () => {
+    await server.stop();
+    await new Promise((r) => twitchStub.close(r));
+    await new Promise((r) => stripeStub.close(r));
+  });
+
+  test("a paying subscriber is unaffected by the (absent) allowlist", async () => {
+    const res = await fetch(`${server.baseHttp}/channel-token`, {
+      method: "POST",
+      body: JSON.stringify({ twitchAccessToken: "fake-user-access-token" }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).channel, "streamer-paying");
+  });
+});
+
+describe("beta allowlist remote source (BETA_ALLOWLIST_REMOTE_URL), end-to-end", () => {
+  const JWT_SECRET = "test-jwt-secret";
+  const WEBHOOK_SECRET = "whsec_test";
+  const STRIPE_KEY = "sk_test_fake";
+  const GRACE_SECONDS = 120;
+
+  let twitchStub, stripeStub, remoteStub, server;
+  let twitchIdToReturn = "900000001";
+  let remoteStatus = 200;
+  let remoteBody = "900000001";
+
+  async function waitFor(predicate, { timeoutMs = 3000, intervalMs = 20 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (await predicate()) return;
+      if (Date.now() > deadline) throw new Error("waitFor: condition never became true");
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  }
+
+  async function statusText() {
+    return (await fetch(`${server.baseHttp}/`)).text();
+  }
+
+  async function requestToken(twitchAccessToken = "fake-user-access-token") {
+    return fetch(`${server.baseHttp}/channel-token`, {
+      method: "POST",
+      body: JSON.stringify({ twitchAccessToken }),
+    });
+  }
+
+  before(async () => {
+    twitchStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      const authHeader = req.headers["authorization"] || "";
+      if (authHeader === "Bearer invalid-token") { res.end(JSON.stringify({ data: [] })); return; }
+      res.end(JSON.stringify({ data: [{ id: twitchIdToReturn }] }));
+    });
+    stripeStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url.startsWith("/subscriptions/search")) res.end(JSON.stringify({ data: [] }));
+      else res.end(JSON.stringify({ metadata: {} }));
+    });
+    remoteStub = await startStub((req, res) => {
+      res.writeHead(remoteStatus, { "Content-Type": "text/plain" });
+      res.end(remoteBody);
+    });
+    server = await startServer({
+      MULTI_TENANT: "1",
+      RELAY_JWT_SECRET: JWT_SECRET,
+      STRIPE_SECRET_KEY: STRIPE_KEY,
+      STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      ENTITLEMENT_GRACE_SECONDS: String(GRACE_SECONDS),
+      TWITCH_HELIX_BASE: `http://127.0.0.1:${twitchStub.address().port}`,
+      STRIPE_API_BASE: `http://127.0.0.1:${stripeStub.address().port}`,
+      BETA_ALLOWLIST_TWITCH_IDS: "streamer-env-only",
+      BETA_ALLOWLIST_REMOTE_URL: `http://127.0.0.1:${remoteStub.address().port}/allowlist`,
+      // Fractional seconds — a test-only convenience so the interval is fast
+      // without needing a dedicated ms-based env var.
+      BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS: "0.05",
+    });
+    await waitFor(async () => /remote (ok|stale)/.test(await statusText()));
+  });
+
+  after(async () => {
+    await server.stop();
+    await new Promise((r) => twitchStub.close(r));
+    await new Promise((r) => stripeStub.close(r));
+    await new Promise((r) => remoteStub.close(r));
+  });
+
+  test("an id granted only via the remote source (not env, not subscribed) is issued a token", async () => {
+    twitchIdToReturn = "900000001";
+    const res = await requestToken();
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).channel, "900000001");
+  });
+
+  test("the env var allowlist still works unchanged alongside a remote source", async () => {
+    twitchIdToReturn = "streamer-env-only";
+    const res = await requestToken();
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).channel, "streamer-env-only");
+  });
+
+  test("an id in neither list is still refused (403)", async () => {
+    twitchIdToReturn = "900000099";
+    const res = await requestToken();
+    assert.equal(res.status, 403);
+  });
+
+  test("an id granted via the remote source still requires a verifiable Twitch identity — no bypass", async () => {
+    twitchIdToReturn = "900000001";
+    const res = await requestToken("invalid-token");
+    assert.equal(res.status, 401);
+  });
+
+  test("editing the remote source adds a new tester with no redeploy (the whole point of this feature)", async () => {
+    remoteBody = "900000001,900000002";
+    await waitFor(async () => {
+      twitchIdToReturn = "900000002";
+      return (await requestToken()).status === 200;
+    });
+    twitchIdToReturn = "900000002";
+    const res = await requestToken();
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).channel, "900000002");
+  });
+
+  test("the root status line reports the effective merged count and the remote fetch state", async () => {
+    const text = await statusText();
+    assert.match(text, /3 beta allowlisted/); // streamer-env-only + 900000001 + 900000002
+    assert.match(text, /remote ok/);
+  });
+
+  test("a fetch failure (non-2xx) keeps the last known good remote list, and status flips to stale", async () => {
+    remoteStatus = 500;
+    await waitFor(async () => /remote stale/.test(await statusText()));
+
+    twitchIdToReturn = "900000002";
+    const res = await requestToken();
+    assert.equal(res.status, 200, "a tester granted before the outage must not lose access");
+  });
+
+  test("a malformed response (no valid ids) also keeps the last known good list, not a wipe", async () => {
+    remoteStatus = 200;
+    remoteBody = "<html>wrong url, not the raw gist</html>";
+    await waitFor(async () => {
+      const s = await statusText();
+      return /remote stale/.test(s);
+    });
+
+    twitchIdToReturn = "900000001";
+    const res = await requestToken();
+    assert.equal(res.status, 200, "a typo/garbage remote response must not silently revoke everyone");
+  });
+
+  test("recovery: once the source is fixed again, the next refresh picks it back up and status returns to ok", async () => {
+    remoteBody = "900000001,900000002,900000003";
+    await waitFor(async () => {
+      twitchIdToReturn = "900000003";
+      return (await requestToken()).status === 200;
+    });
+    assert.match(await statusText(), /remote ok/);
+  });
+});
+
+describe("beta allowlist with no remote source configured behaves exactly as before", () => {
+  const JWT_SECRET = "test-jwt-secret";
+  const WEBHOOK_SECRET = "whsec_test";
+  const STRIPE_KEY = "sk_test_fake";
+
+  let twitchStub, stripeStub, server;
+
+  before(async () => {
+    twitchStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "streamer-env-only-2" }] }));
+    });
+    stripeStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url.startsWith("/subscriptions/search")) res.end(JSON.stringify({ data: [] }));
+      else res.end(JSON.stringify({ metadata: {} }));
+    });
+    server = await startServer({
+      MULTI_TENANT: "1",
+      RELAY_JWT_SECRET: JWT_SECRET,
+      STRIPE_SECRET_KEY: STRIPE_KEY,
+      STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      TWITCH_HELIX_BASE: `http://127.0.0.1:${twitchStub.address().port}`,
+      STRIPE_API_BASE: `http://127.0.0.1:${stripeStub.address().port}`,
+      BETA_ALLOWLIST_TWITCH_IDS: "streamer-env-only-2",
+      // BETA_ALLOWLIST_REMOTE_URL intentionally absent.
+    });
+  });
+
+  after(async () => {
+    await server.stop();
+    await new Promise((r) => twitchStub.close(r));
+    await new Promise((r) => stripeStub.close(r));
+  });
+
+  test("the env var allowlist still grants a token with no remote source configured", async () => {
+    const res = await fetch(`${server.baseHttp}/channel-token`, {
+      method: "POST",
+      body: JSON.stringify({ twitchAccessToken: "fake-user-access-token" }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).channel, "streamer-env-only-2");
+  });
+
+  test("the root status line shows no '(remote ...)' note at all", async () => {
+    const text = await (await fetch(`${server.baseHttp}/`)).text();
+    assert.doesNotMatch(text, /remote/);
+  });
+});
+
 describe("single-tenant mode is unaffected by entitlement config", () => {
   let server;
 
