@@ -1,16 +1,19 @@
 # SlipstreamIRL Relay
 
-The backend for **SlipstreamIRL** — a small Node service (deploys on Render, e.g.
-`irl-stream-control`) that relays your phone's GPS and bike-sensor data to live OBS
-overlays, serves a Twitch Extension preview, and runs a scheduled job that
-auto-links each ride's YouTube VOD (with an AI-written title/description) back to
-Strava.
+The backend for **SlipstreamIRL** — a small Node service (deploys on Render) that
+relays your phone's GPS and bike-sensor data to live OBS overlays, serves a
+Twitch Extension preview, and runs a scheduled job that auto-links each ride's
+YouTube VOD (with an AI-written title/description) back to Strava.
 
 Phone (the [app](https://github.com/PeloTom89/slipstreamirl-app)) → this relay →
 your OBS browser source. No RTIRL, no third-party location service.
 
-**Status: beta.** The free, self-hosted deploy below is currently the only way
-to run this. There's no live hosted service to sign up for.
+**Status: beta.** Two ways to run this, both free: a hosted relay at
+`relay.slipstreamirl.com`, currently by invitation only (the operator adds a
+streamer's Twitch id to a beta allowlist — no public signup yet), or
+self-hosting this repo yourself, which anyone can do right now with the
+Deploy instructions below. There's no paid tier or subscription product live
+today.
 
 ## What it does
 
@@ -75,14 +78,14 @@ channel push token issuance, multi-tenant mode), `POST /stripe-webhook`
 - Query params on both overlays: `?embed=1` (flush, no rounded corners — used by
   the in-app preview/Karoo embed), `?wind=off`, `?units=metric`, `?trail=off`, `?north=1`.
 
-## Deploy
+## Deploy (self-host your own relay)
 
 [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/PeloTom89/slipstreamirl-relay.git)
 
 1. Create a **Public** Twitch app at <https://dev.twitch.tv/console/apps>; copy the **Client ID**.
 2. Click Deploy (or Render → New → Blueprint → this repo). Paste the Client ID into
    `TWITCH_CLIENT_ID`; Render generates `RELAY_TOKEN`. Deploy.
-3. Copy your service URL (e.g. `https://irl-stream-control.onrender.com`).
+3. Copy your service URL (e.g. `https://your-service.onrender.com`).
 4. On the Twitch app, add `<your-url>/app-redirect` as an OAuth Redirect URL (exact match).
 5. In the app, enter the relay URL + token under **Relay Server**. In OBS, add a
    Browser Source for `<your-url>/overlay` and/or `<your-url>/karoo`.
