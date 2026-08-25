@@ -66,6 +66,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   and `tools/relay-entitlement.test.mjs`. It intentionally does not match the
   `tools/*.test.mjs` glob `npm test` runs, so it's a plain importable module,
   not a test suite itself.
+- `BETA_ALLOWLIST_TWITCH_IDS` (server.js) bypasses only the *payment* half of
+  `POST /channel-token`'s entitlement check — Twitch identity verification is
+  never skipped, and the check is only reachable when `entitlementStore`
+  exists (i.e. Stripe is otherwise configured). See README.md "Beta
+  allowlist" for the full contract; the captain must clear it before charging
+  real customers.
 - Two env vars exist purely as test seams and are never meant to be set in
   production: `TWITCH_HELIX_BASE` and `STRIPE_API_BASE` (both default to the
   real API hosts). Integration tests point these at a local stub HTTP server

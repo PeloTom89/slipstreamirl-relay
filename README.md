@@ -370,6 +370,45 @@ Dashboard, separate from this setting) can already run several days on its
 own before a subscription flips to `past_due`/`unpaid`, so this grace period
 stacks on top of whatever Stripe's own retries already bought.
 
+### Beta allowlist (TestFlight-style testing, no subscription required)
+
+The captain is running an internal beta before hosted relay goes
+subscription-only, and wants a handful of named testers to use it for free
+without setting up Stripe test subscriptions for each of them. **A blanket
+"entitlement off" switch would be wrong for this:** the relay is a public
+internet endpoint — `POST /channel-token` is reachable by anyone with a
+Twitch account, whether or not they're one of the captain's testers.
+TestFlight restricts who can *install the app*, not who can *reach the
+server*; a global bypass would hand free hosted relay access to anyone who
+found the URL.
+
+Instead, `BETA_ALLOWLIST_TWITCH_IDS` is an explicit, per-person, comma-
+separated list of Twitch user ids exempt from the Stripe subscription check.
+**Absent or empty means nobody is allowlisted — never "everybody."** Stray
+commas/whitespace parse to nothing, not an accidental match.
+
+- Only bypasses the *payment* check. Identity is never weakened: the caller
+  still has to present a Twitch access token that `verifyTwitchUser()`
+  resolves to the allowlisted id, exactly like a paying subscriber — the
+  allowlist is never trusted as a claimed id on its own.
+- Only reachable when Stripe entitlement is otherwise configured
+  (`STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` both set) — this is not a way
+  to run hosted mode with no Stripe configuration at all. With Stripe unset,
+  `/channel-token` still answers 503 regardless of this variable.
+- Tokens issued via the allowlist are indistinguishable downstream — same
+  JWT shape, same push/isolation behavior as a paying subscriber's token.
+- **Visible by design, not silent.** Every allowlist-issued token logs a line
+  naming the Twitch id, and the relay's root status page appends the current
+  allowlisted-id count next to the channel count (e.g. `(multi-tenant, 2
+  channels, 3 beta allowlisted)`) whenever the list is non-empty, so the
+  captain can see at a glance that free access is switched on and for how
+  many people.
+
+**Clear `BETA_ALLOWLIST_TWITCH_IDS` before charging real customers.** It has
+no expiry and no separate kill switch beyond unsetting the env var — leaving
+it set after going live would keep granting free access to whoever's still
+on the list.
+
 ### Env vars
 
 - `STRIPE_SECRET_KEY` — Stripe secret API key. Used mostly for read calls
@@ -385,9 +424,11 @@ stacks on top of whatever Stripe's own retries already bought.
   off.
 - `ENTITLEMENT_GRACE_SECONDS` *(optional, default `259200` = 3 days)* — see
   above.
+- `BETA_ALLOWLIST_TWITCH_IDS` *(optional)* — see **Beta allowlist** above.
 
-Both are unset on every free/BYO deploy and on the captain's own deployment
-until he opts in — this is purely additive to multi-tenant mode.
+Both `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` are unset on every free/BYO
+deploy and on the captain's own deployment until he opts in — this is purely
+additive to multi-tenant mode.
 
 ### What the captain needs to create in Stripe (not done by this change)
 
@@ -518,6 +559,10 @@ the description onto the YouTube video too).
   *(optional, multi-tenant mode only)* — enable Stripe-backed entitlement
   gating on channel-token issuance. See **Stripe entitlement** above; unset
   on every free/BYO deploy and until the captain opts in.
+- `BETA_ALLOWLIST_TWITCH_IDS` *(optional, multi-tenant + Stripe entitlement
+  only)* — comma-separated Twitch ids exempt from the subscription check, for
+  beta testing. See **Beta allowlist** above; **clear this before charging
+  real customers.**
 
 ## Notes
 

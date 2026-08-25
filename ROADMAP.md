@@ -53,6 +53,16 @@ token model).
       **Still open:** Discord as a second, OR'd entitlement source (explicitly
       out of scope of the change that added Stripe — see README.md "Discord
       (not built)").
+- [x] **Beta allowlist** — `BETA_ALLOWLIST_TWITCH_IDS` (comma-separated Twitch
+      ids) bypasses the *payment* check only, not identity verification, so
+      the captain's TestFlight testers can use hosted mode without a Stripe
+      subscription while it's still an internal beta. Empty/absent by
+      default, only reachable when Stripe entitlement is otherwise configured,
+      and visible (logged per token issuance, counted on the root status
+      line) rather than a silent bypass — see README.md "Beta allowlist".
+      **Still open:** clearing the list before hosted relay goes
+      subscription-only for real is a manual step the captain has to
+      remember; nothing in code expires or nags about it.
 - [ ] **Scaling** — Render always-on; if multi-instance, Redis pub/sub to share
       rooms across instances (WebSocket fan-out). Still premature per the
       multi-tenant design doc's cost/scale analysis — single-instance covers

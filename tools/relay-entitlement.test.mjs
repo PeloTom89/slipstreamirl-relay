@@ -291,6 +291,192 @@ describe("checkout.session.completed identity write, end-to-end (real HTTP to a 
   });
 });
 
+describe("beta allowlist (BETA_ALLOWLIST_TWITCH_IDS)", () => {
+  const JWT_SECRET = "test-jwt-secret";
+  const WEBHOOK_SECRET = "whsec_test";
+  const STRIPE_KEY = "sk_test_fake";
+  const GRACE_SECONDS = 120;
+
+  let twitchStub, stripeStub, server;
+  let twitchIdToReturn = "streamer-allowlist-1";
+
+  before(async () => {
+    twitchStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      // A sentinel "invalid" token means "no identity resolves" — used to
+      // prove the allowlist can't bypass identity verification.
+      const authHeader = req.headers["authorization"] || "";
+      if (authHeader === "Bearer invalid-token") { res.end(JSON.stringify({ data: [] })); return; }
+      res.end(JSON.stringify({ data: [{ id: twitchIdToReturn }] }));
+    });
+    stripeStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      // No active subscription anywhere — every id here is unentitled by Stripe alone.
+      if (req.url.startsWith("/subscriptions/search")) res.end(JSON.stringify({ data: [] }));
+      else res.end(JSON.stringify({ metadata: {} }));
+    });
+    server = await startServer({
+      MULTI_TENANT: "1",
+      RELAY_JWT_SECRET: JWT_SECRET,
+      STRIPE_SECRET_KEY: STRIPE_KEY,
+      STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      ENTITLEMENT_GRACE_SECONDS: String(GRACE_SECONDS),
+      TWITCH_HELIX_BASE: `http://127.0.0.1:${twitchStub.address().port}`,
+      STRIPE_API_BASE: `http://127.0.0.1:${stripeStub.address().port}`,
+      BETA_ALLOWLIST_TWITCH_IDS: "streamer-allowlist-1, streamer-allowlist-2,, ,streamer-allowlist-3",
+    });
+  });
+
+  after(async () => {
+    await server.stop();
+    await new Promise((r) => twitchStub.close(r));
+    await new Promise((r) => stripeStub.close(r));
+  });
+
+  async function requestToken(twitchAccessToken = "fake-user-access-token") {
+    return fetch(`${server.baseHttp}/channel-token`, {
+      method: "POST",
+      body: JSON.stringify({ twitchAccessToken }),
+    });
+  }
+
+  test("an allowlisted id with a verifiable Twitch identity is granted a token", async () => {
+    twitchIdToReturn = "streamer-allowlist-1";
+    const res = await requestToken();
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.channel, "streamer-allowlist-1");
+    assert.ok(body.token);
+  });
+
+  test("stray commas/whitespace in the allowlist parse to the trimmed ids, not blank entries", async () => {
+    twitchIdToReturn = "streamer-allowlist-3";
+    const res = await requestToken();
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).channel, "streamer-allowlist-3");
+  });
+
+  test("a non-allowlisted, non-subscribed id is still refused (403)", async () => {
+    twitchIdToReturn = "streamer-not-allowlisted";
+    const res = await requestToken();
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).error, "not entitled");
+  });
+
+  test("an allowlisted id WITHOUT a verifiable Twitch identity is still rejected — no identity bypass", async () => {
+    // The stub Helix server treats this sentinel token as "no identity" —
+    // being allowlisted-by-id never substitutes for a verified Twitch token.
+    const res = await requestToken("invalid-token");
+    assert.equal(res.status, 401);
+    assert.equal((await res.json()).error, "could not verify Twitch identity");
+  });
+
+  test("the root status line reports the allowlisted-id count", async () => {
+    const res = await fetch(`${server.baseHttp}/`);
+    const text = await res.text();
+    assert.match(text, /3 beta allowlisted/);
+  });
+});
+
+describe("beta allowlist is empty by default — grants nobody", () => {
+  const JWT_SECRET = "test-jwt-secret";
+  const WEBHOOK_SECRET = "whsec_test";
+  const STRIPE_KEY = "sk_test_fake";
+
+  let twitchStub, stripeStub, server;
+
+  before(async () => {
+    twitchStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "streamer-would-be-allowlisted" }] }));
+    });
+    stripeStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url.startsWith("/subscriptions/search")) res.end(JSON.stringify({ data: [] }));
+      else res.end(JSON.stringify({ metadata: {} }));
+    });
+    // BETA_ALLOWLIST_TWITCH_IDS deliberately a stray-comma/whitespace string,
+    // never a real id, and also tested absent entirely below.
+    server = await startServer({
+      MULTI_TENANT: "1",
+      RELAY_JWT_SECRET: JWT_SECRET,
+      STRIPE_SECRET_KEY: STRIPE_KEY,
+      STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      TWITCH_HELIX_BASE: `http://127.0.0.1:${twitchStub.address().port}`,
+      STRIPE_API_BASE: `http://127.0.0.1:${stripeStub.address().port}`,
+      BETA_ALLOWLIST_TWITCH_IDS: " , ,",
+    });
+  });
+
+  after(async () => {
+    await server.stop();
+    await new Promise((r) => twitchStub.close(r));
+    await new Promise((r) => stripeStub.close(r));
+  });
+
+  test("an allowlist of only stray commas/whitespace grants nobody, including an id that would match a blank entry", async () => {
+    const res = await fetch(`${server.baseHttp}/channel-token`, {
+      method: "POST",
+      body: JSON.stringify({ twitchAccessToken: "fake-user-access-token" }),
+    });
+    assert.equal(res.status, 403);
+  });
+
+  test("the root status line omits the allowlist note entirely when nobody is allowlisted", async () => {
+    const res = await fetch(`${server.baseHttp}/`);
+    const text = await res.text();
+    assert.doesNotMatch(text, /beta allowlisted/);
+  });
+});
+
+describe("beta allowlist absent entirely (existing Stripe entitlement test suite is unaffected)", () => {
+  const JWT_SECRET = "test-jwt-secret";
+  const WEBHOOK_SECRET = "whsec_test";
+  const STRIPE_KEY = "sk_test_fake";
+
+  let twitchStub, stripeStub, server;
+
+  before(async () => {
+    twitchStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "streamer-paying" }] }));
+    });
+    stripeStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      const periodEnd = Math.floor(Date.now() / 1000) + 3600;
+      if (req.url.startsWith("/subscriptions/search")) {
+        res.end(JSON.stringify({ data: [{ status: "active", items: { data: [{ current_period_end: periodEnd }] } }] }));
+      } else {
+        res.end(JSON.stringify({ metadata: {} }));
+      }
+    });
+    server = await startServer({
+      MULTI_TENANT: "1",
+      RELAY_JWT_SECRET: JWT_SECRET,
+      STRIPE_SECRET_KEY: STRIPE_KEY,
+      STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      TWITCH_HELIX_BASE: `http://127.0.0.1:${twitchStub.address().port}`,
+      STRIPE_API_BASE: `http://127.0.0.1:${stripeStub.address().port}`,
+      // BETA_ALLOWLIST_TWITCH_IDS intentionally absent.
+    });
+  });
+
+  after(async () => {
+    await server.stop();
+    await new Promise((r) => twitchStub.close(r));
+    await new Promise((r) => stripeStub.close(r));
+  });
+
+  test("a paying subscriber is unaffected by the (absent) allowlist", async () => {
+    const res = await fetch(`${server.baseHttp}/channel-token`, {
+      method: "POST",
+      body: JSON.stringify({ twitchAccessToken: "fake-user-access-token" }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).channel, "streamer-paying");
+  });
+});
+
 describe("single-tenant mode is unaffected by entitlement config", () => {
   let server;
 

@@ -21,6 +21,11 @@
 //   ENTITLEMENT_GRACE_SECONDS  optional; grace period after a lapsed/failed
 //                subscription before token renewal is refused. Defaults to
 //                3 days — the captain's call to confirm, see README.md.
+//   BETA_ALLOWLIST_TWITCH_IDS  optional, multi-tenant + Stripe entitlement
+//                only; comma-separated Twitch user ids exempted from the
+//                subscription check for beta testing. Absent/empty means
+//                nobody is allowlisted — never "everybody". See README.md
+//                "Beta allowlist"; clear this before charging real customers.
 //
 // Multi-tenant mode (MULTI_TENANT=1): the relay hosts many streamers' rooms
 // instead of one. State, rooms, and push auth all become per-channel, keyed by
@@ -80,6 +85,20 @@ const entitlementStore = (MULTI_TENANT && STRIPE_SECRET_KEY && STRIPE_WEBHOOK_SE
       writeSubscriptionMetadata: createSubscriptionMetadataWriter({ secretKey: STRIPE_SECRET_KEY, apiBase: STRIPE_API_BASE }),
     })
   : null;
+
+// Beta allowlist (see env var comment above): a captain-curated set of Twitch
+// ids that bypass the *payment* check only — verifyTwitchUser() still has to
+// resolve the caller's access token to one of these ids first, exactly like
+// a paying subscriber. Comma-separated; trimmed and empty entries dropped so
+// a stray comma or blank env var can never widen to "everybody". Only
+// reachable at all when entitlementStore exists (i.e. Stripe is configured)
+// — this is not a way to run hosted mode with zero Stripe config.
+const BETA_ALLOWLIST_TWITCH_IDS = new Set(
+  (process.env.BETA_ALLOWLIST_TWITCH_IDS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
 
 // Badge lookups use a Twitch app token (client credentials), which requires a
 // CONFIDENTIAL app. The public login app can't have a secret, so this is a
@@ -394,7 +413,17 @@ const server = http.createServer((req, res) => {
       let entitled;
       try { entitled = await entitlementStore.isEntitled(channelId); }
       catch { return done(503, { error: "entitlement check unavailable" }); }
+      // Beta allowlist bypasses the payment check only — channelId above was
+      // already proven by verifyTwitchUser(), never taken from a claim.
+      let viaAllowlist = false;
+      if (!entitled && BETA_ALLOWLIST_TWITCH_IDS.has(channelId)) {
+        entitled = true;
+        viaAllowlist = true;
+      }
       if (!entitled) return done(403, { error: "not entitled" });
+      if (viaAllowlist) {
+        console.log("channel token issued via beta allowlist (no Stripe subscription):", channelId);
+      }
       done(200, { channel: channelId, token: signChannelToken(channelId, JWT_SECRET) });
     });
     return;
@@ -580,7 +609,10 @@ const server = http.createServer((req, res) => {
   }
   res.writeHead(200, { "Content-Type": "text/plain" });
   if (MULTI_TENANT) {
-    res.end("location relay up (multi-tenant, " + channels.size + " channel" + (channels.size === 1 ? "" : "s") + ")");
+    const allowlistNote = BETA_ALLOWLIST_TWITCH_IDS.size
+      ? ", " + BETA_ALLOWLIST_TWITCH_IDS.size + " beta allowlisted"
+      : "";
+    res.end("location relay up (multi-tenant, " + channels.size + " channel" + (channels.size === 1 ? "" : "s") + allowlistNote + ")");
   } else {
     res.end("location relay up (broadcast delay " + defaultChannel.delayMs + "ms, timer-sync)");
   }
