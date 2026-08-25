@@ -409,6 +409,67 @@ no expiry and no separate kill switch beyond unsetting the env var — leaving
 it set after going live would keep granting free access to whoever's still
 on the list.
 
+#### Adding a tester without a redeploy: `BETA_ALLOWLIST_REMOTE_URL`
+
+Changing an env var redeploys the Render service — roughly a minute, and it
+drops every open connection and clears all in-memory ride state (this relay
+keeps no durable storage at all — see **The design question: where does
+"who has paid" live?** above). The captain wanted to add a beta tester
+without doing that. `BETA_ALLOWLIST_REMOTE_URL` points the relay at a URL it
+polls (default every 5 minutes,
+`BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS` to change that) for **additional**
+allowlisted Twitch ids — the fetched ids are *merged with*
+`BETA_ALLOWLIST_TWITCH_IDS`, never replacing it. Editing the URL's content
+(e.g. a Gist) takes effect on the next poll — no redeploy.
+
+**The source content is the same comma/newline-separated numeric-id format
+as the env var.** A [GitHub Gist](https://gist.github.com) raw URL
+(`https://gist.githubusercontent.com/<user>/<gist_id>/raw/<file>`) is the
+obvious candidate — free, no infra, editable from a phone. **⚠️ Do not commit
+this file to this repo.** Render auto-deploys on every push to `main`, so a
+list committed here would trigger the very redeploy this feature exists to
+avoid, defeating the entire point. Use a Gist or any other host that isn't
+this repository.
+
+**A public Gist is effectively public.** Twitch user ids aren't secret by
+themselves, but the *list* discloses who currently has free hosted-relay
+access. Use a **secret** Gist (unlisted, not indexed/searchable — still
+technically reachable by anyone with the raw URL, same trust model as the
+Payment Link URLs already in this README) if that disclosure matters to you.
+
+**Failure handling is deliberately conservative** (`tools/beta-allowlist-remote.js`):
+
+- A fetch that errors, times out, or returns a non-2xx status **keeps the
+  last known good list** — a tester mid-beta never loses access because a
+  Gist was briefly unreachable. It never falls back to "nobody," only to
+  whatever was last confirmed good (or the env var's own ids, if nothing has
+  ever been fetched successfully yet).
+- A response that parses to **zero valid ids** (garbage, an HTML error page,
+  an empty body, a typo) is treated the same way — **ignored, list kept as
+  it was.** This means the remote source can only ever *add or change* which
+  testers are allowlisted, never *silently revoke everyone* through a
+  broken/misconfigured URL. (To intentionally stop granting access via a
+  remote id, edit the source to a list that no longer contains it — a
+  non-empty list that drops one id **does** take effect; making the list
+  empty in one edit does not, by the rule above. Fully clearing remote-
+  granted access requires unsetting `BETA_ALLOWLIST_REMOTE_URL`, which is a
+  redeploy.)
+- The fetch is bounded: a timeout and a maximum response size (both fixed,
+  sane defaults — this is a short list of ids, never expected to be large).
+- Content is validated strictly: only entries that look like a real Twitch
+  numeric id are accepted; anything else (letters, punctuation, HTML tags)
+  is silently dropped, and the number of ids accepted from one fetch is
+  capped. A compromised or fat-fingered source can only ever grant access to
+  ids that pass this validation — never anything else.
+
+**Visibility, extended:** the root status line's allowlisted-id count already
+includes remote-sourced ids (env var + remote, deduplicated), and — whenever
+a remote source is configured — the status line also shows whether the last
+poll succeeded, e.g. `(multi-tenant, 2 channels, 4 beta allowlisted, remote
+ok)` vs `... remote stale)` (last poll failed or was unparseable, serving the
+prior list) vs `... remote never-fetched)` (no successful poll yet at all,
+serving only the env var's ids). Every successful/failed poll is also logged.
+
 ### Env vars
 
 - `STRIPE_SECRET_KEY` — Stripe secret API key. Used mostly for read calls
@@ -425,6 +486,10 @@ on the list.
 - `ENTITLEMENT_GRACE_SECONDS` *(optional, default `259200` = 3 days)* — see
   above.
 - `BETA_ALLOWLIST_TWITCH_IDS` *(optional)* — see **Beta allowlist** above.
+- `BETA_ALLOWLIST_REMOTE_URL` *(optional)* — see **Adding a tester without a
+  redeploy** above.
+- `BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS` *(optional, default `300` = 5
+  min)* — how often the URL above is re-polled.
 
 Both `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` are unset on every free/BYO
 deploy and on the captain's own deployment until he opts in — this is purely
@@ -563,6 +628,11 @@ the description onto the YouTube video too).
   only)* — comma-separated Twitch ids exempt from the subscription check, for
   beta testing. See **Beta allowlist** above; **clear this before charging
   real customers.**
+- `BETA_ALLOWLIST_REMOTE_URL` / `BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS`
+  *(optional, multi-tenant + Stripe entitlement only)* — polls a URL (e.g. a
+  Gist raw link) for additional allowlisted ids, merged with
+  `BETA_ALLOWLIST_TWITCH_IDS`, so the captain can add a beta tester without a
+  redeploy. See **Adding a tester without a redeploy** above.
 
 ## Notes
 

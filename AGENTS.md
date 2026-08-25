@@ -72,6 +72,15 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   exists (i.e. Stripe is otherwise configured). See README.md "Beta
   allowlist" for the full contract; the captain must clear it before charging
   real customers.
+- `tools/beta-allowlist-remote.js` (`BETA_ALLOWLIST_REMOTE_URL`) is the
+  optional remote source merged into that same allowlist, so the captain can
+  add a tester without an env var change (a redeploy drops connections and
+  wipes in-memory ride state). Its one load-bearing rule: a fetch that fails,
+  or parses to **zero** valid ids, must never replace the last known good
+  list — that's what stops a network blip or a typo/garbage source from
+  silently revoking every beta tester. Any change to its fetch/parse path
+  needs a test proving that rule still holds, not just a happy-path test —
+  see README.md "Adding a tester without a redeploy" for the full design.
 - Two env vars exist purely as test seams and are never meant to be set in
   production: `TWITCH_HELIX_BASE` and `STRIPE_API_BASE` (both default to the
   real API hosts). Integration tests point these at a local stub HTTP server

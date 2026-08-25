@@ -26,6 +26,14 @@
 //                subscription check for beta testing. Absent/empty means
 //                nobody is allowlisted — never "everybody". See README.md
 //                "Beta allowlist"; clear this before charging real customers.
+//   BETA_ALLOWLIST_REMOTE_URL  optional; a URL (e.g. a GitHub Gist raw link)
+//                the relay polls for additional allowlisted Twitch ids, so
+//                the captain can add a beta tester without redeploying (a
+//                redeploy drops connections and clears in-memory ride
+//                state). Merged with BETA_ALLOWLIST_TWITCH_IDS, never
+//                replaces it. See README.md "Beta allowlist".
+//   BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS  optional, default 300 (5 min) —
+//                how often the URL above is re-polled.
 //
 // Multi-tenant mode (MULTI_TENANT=1): the relay hosts many streamers' rooms
 // instead of one. State, rooms, and push auth all become per-channel, keyed by
@@ -46,6 +54,7 @@ const {
   createCustomerMetadataFetcher,
   createSubscriptionMetadataWriter,
 } = require("./tools/stripe-entitlement.js");
+const { createRemoteAllowlist } = require("./tools/beta-allowlist-remote.js");
 
 const PORT = process.env.PORT || 8080;
 const TOKEN = process.env.RELAY_TOKEN || "change-me";
@@ -99,6 +108,38 @@ const BETA_ALLOWLIST_TWITCH_IDS = new Set(
     .map((s) => s.trim())
     .filter(Boolean)
 );
+
+// Optional remote source of additional allowlisted ids (see env var comment
+// above and tools/beta-allowlist-remote.js for the fetch/validation/failure
+// design) — merged with, never replacing, the env var list above. Only
+// started when the beta allowlist can actually do anything (Stripe
+// entitlement configured), same gating as the env var list itself.
+// BETA_ALLOWLIST_REMOTE_TIMEOUT_MS is a test-only seam (a local stub server
+// that never responds, to exercise the timeout path fast) — not
+// captain-facing, not documented in README.md, same convention as
+// TWITCH_HELIX_BASE/STRIPE_API_BASE above.
+const remoteAllowlist = (MULTI_TENANT && entitlementStore && process.env.BETA_ALLOWLIST_REMOTE_URL)
+  ? createRemoteAllowlist({
+      url: process.env.BETA_ALLOWLIST_REMOTE_URL,
+      intervalMs: (Number(process.env.BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS) || 300) * 1000,
+      timeoutMs: Number(process.env.BETA_ALLOWLIST_REMOTE_TIMEOUT_MS) || undefined,
+      onLog(level, info) {
+        if (level === "ok") {
+          console.log("beta allowlist remote fetch ok:", info.count, "id(s)");
+        } else {
+          console.error("beta allowlist remote fetch failed, keeping last known good list:", info.error);
+        }
+      },
+    })
+  : null;
+if (remoteAllowlist) remoteAllowlist.start();
+
+// The set actually checked at token issuance and shown on the status line —
+// env var ids plus whatever the remote source last resolved successfully.
+function effectiveAllowlist() {
+  if (!remoteAllowlist) return BETA_ALLOWLIST_TWITCH_IDS;
+  return new Set([...BETA_ALLOWLIST_TWITCH_IDS, ...remoteAllowlist.getIds()]);
+}
 
 // Badge lookups use a Twitch app token (client credentials), which requires a
 // CONFIDENTIAL app. The public login app can't have a secret, so this is a
@@ -415,8 +456,10 @@ const server = http.createServer((req, res) => {
       catch { return done(503, { error: "entitlement check unavailable" }); }
       // Beta allowlist bypasses the payment check only — channelId above was
       // already proven by verifyTwitchUser(), never taken from a claim.
+      // effectiveAllowlist() merges the env var list with whatever the
+      // optional remote source last resolved successfully.
       let viaAllowlist = false;
-      if (!entitled && BETA_ALLOWLIST_TWITCH_IDS.has(channelId)) {
+      if (!entitled && effectiveAllowlist().has(channelId)) {
         entitled = true;
         viaAllowlist = true;
       }
@@ -609,10 +652,12 @@ const server = http.createServer((req, res) => {
   }
   res.writeHead(200, { "Content-Type": "text/plain" });
   if (MULTI_TENANT) {
-    const allowlistNote = BETA_ALLOWLIST_TWITCH_IDS.size
-      ? ", " + BETA_ALLOWLIST_TWITCH_IDS.size + " beta allowlisted"
-      : "";
-    res.end("location relay up (multi-tenant, " + channels.size + " channel" + (channels.size === 1 ? "" : "s") + allowlistNote + ")");
+    const allowlist = effectiveAllowlist();
+    const notes = [];
+    if (allowlist.size) notes.push(allowlist.size + " beta allowlisted");
+    if (remoteAllowlist) notes.push("remote " + remoteAllowlist.status().state);
+    const suffix = notes.length ? ", " + notes.join(", ") : "";
+    res.end("location relay up (multi-tenant, " + channels.size + " channel" + (channels.size === 1 ? "" : "s") + suffix + ")");
   } else {
     res.end("location relay up (broadcast delay " + defaultChannel.delayMs + "ms, timer-sync)");
   }
