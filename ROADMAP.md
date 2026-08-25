@@ -47,22 +47,22 @@ token model).
       signature verification is security-critical and covered by
       `tools/stripe-entitlement.test.mjs`
       and `tools/relay-entitlement.test.mjs`. Grace period
-      (`ENTITLEMENT_GRACE_SECONDS`, default 3 days) is a placeholder default —
-      **the captain still needs to confirm this value.** Never a live check on
-      the hot `/push` path — checked only at token issuance.
-      **Still open:** Discord as a second, OR'd entitlement source (explicitly
-      out of scope of the change that added Stripe — see README.md "Discord
-      (not built)").
+      (`ENTITLEMENT_GRACE_SECONDS`, default 3 days) is a placeholder default;
+      never a live check on the hot `/push` path — checked only at token
+      issuance.
+      **Still open:** Discord as a second, OR'd entitlement source — the
+      entitlement store's `isEntitled()` check is structured so a second
+      source could be OR'd in later without changing the token-issuance code
+      path or JWT format, but no Discord integration exists yet.
 - [x] **Beta allowlist** — `BETA_ALLOWLIST_TWITCH_IDS` (comma-separated Twitch
       ids) bypasses the *payment* check only, not identity verification, so
-      the captain's TestFlight testers can use hosted mode without a Stripe
-      subscription while it's still an internal beta. Empty/absent by
-      default, only reachable when Stripe entitlement is otherwise configured,
-      and visible (logged per token issuance, counted on the root status
-      line) rather than a silent bypass — see README.md "Beta allowlist".
-      **Still open:** clearing the list before hosted relay goes
-      subscription-only for real is a manual step the captain has to
-      remember; nothing in code expires or nags about it.
+      named testers can use hosted mode without a Stripe subscription.
+      Empty/absent by default, only reachable when Stripe entitlement is
+      otherwise configured, and visible (logged per token issuance, counted
+      on the root status line) rather than a silent bypass — see README.md
+      "Beta allowlist". **Still open:** clearing the list before charging
+      real customers is a manual step; nothing in code expires or nags
+      about it.
 - [x] **Beta allowlist, remote source (no redeploy to add a tester)** —
       `BETA_ALLOWLIST_REMOTE_URL` (`tools/beta-allowlist-remote.js`) polls a
       URL (Gist raw link is the intended use) for additional allowlisted ids,
@@ -73,16 +73,16 @@ token model).
       in-memory ride state, which is exactly what this exists to avoid). A
       fetch failure, non-2xx, or a response that parses to zero valid ids
       keeps the last known good list rather than wiping it — see README.md
-      "Adding a tester without a redeploy" for the full failure-handling
-      design and why an empty/garbage response can't silently revoke every
-      beta tester. Root status line and logging extended to cover the merged
+      "Beta allowlist" for the full failure-handling design and why an
+      empty/garbage response can't silently revoke every beta tester. Root
+      status line and logging extended to cover the merged
       list and whether the remote source is currently `ok`/`stale`/
       `never-fetched`.
       **Still open:** same as above (clearing the allowlist before going
       live is manual); also, there's no way to *fully* clear remote-granted
       access down to zero without a redeploy (unsetting
       `BETA_ALLOWLIST_REMOTE_URL`) — deliberate, per the "never silently
-      revoke everyone" design, but worth the captain knowing.
+      revoke everyone" design, but worth knowing.
 - [ ] **Scaling** — Render always-on; if multi-instance, Redis pub/sub to share
       rooms across instances (WebSocket fan-out). Still premature per the
       multi-tenant design doc's cost/scale analysis — single-instance covers
@@ -116,8 +116,8 @@ auto-provisioning, distribution, privacy policy, phasing).
       live Stripe credentials, against fixtures shaped like Stripe's
       documented event/signature scheme (`tools/stripe-entitlement.test.mjs`,
       `tools/relay-entitlement.test.mjs`) — a few specifics (exact Payment
-      Link Dashboard mechanics, real webhook delivery behavior) are flagged
-      in README.md as unverified until the captain has a live account.
+      Link Dashboard mechanics, real webhook delivery behavior) haven't been
+      exercised against a live Stripe account.
 - [x] **Multi-tenant relay, opt-in mode** — see the "Big bet" section above and
       README.md "Multi-tenant mode". `broadcast()`/`emit()` now take an
       explicit `channel` state bundle instead of closing over module-level

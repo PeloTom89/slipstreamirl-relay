@@ -20,7 +20,7 @@
 //                both are set.
 //   ENTITLEMENT_GRACE_SECONDS  optional; grace period after a lapsed/failed
 //                subscription before token renewal is refused. Defaults to
-//                3 days — the captain's call to confirm, see README.md.
+//                3 days — see README.md.
 //   BETA_ALLOWLIST_TWITCH_IDS  optional, multi-tenant + Stripe entitlement
 //                only; comma-separated Twitch user ids exempted from the
 //                subscription check for beta testing. Absent/empty means
@@ -28,7 +28,7 @@
 //                "Beta allowlist"; clear this before charging real customers.
 //   BETA_ALLOWLIST_REMOTE_URL  optional; a URL (e.g. a GitHub Gist raw link)
 //                the relay polls for additional allowlisted Twitch ids, so
-//                the captain can add a beta tester without redeploying (a
+//                you can add a beta tester without redeploying (a
 //                redeploy drops connections and clears in-memory ride
 //                state). Merged with BETA_ALLOWLIST_TWITCH_IDS, never
 //                replaces it. See README.md "Beta allowlist".
@@ -39,8 +39,7 @@
 // instead of one. State, rooms, and push auth all become per-channel, keyed by
 // `?channel=<id>` (the streamer's Twitch user id) — see README.md and
 // ROADMAP.md for the full contract. Off by default so a bare `RELAY_TOKEN`
-// deploy (every free/BYO relay, and the captain's own deployment unless it
-// opts in) behaves exactly as it always has.
+// deploy behaves exactly as it always has.
 
 const http = require("http");
 const fs = require("fs");
@@ -66,19 +65,18 @@ if (MULTI_TENANT && !JWT_SECRET) {
 }
 const CLIENT_ID = process.env.TWITCH_CLIENT_ID || ""; // login app (public) — user OAuth
 // Overridable only for tests (a local stub server) — production always talks
-// to real Twitch. Not a captain-facing config option.
+// to real Twitch. Not an operator-facing config option.
 const TWITCH_HELIX_BASE = process.env.TWITCH_HELIX_BASE || "https://api.twitch.tv/helix";
 
 // Stripe entitlement (multi-tenant mode only) — see README.md "Stripe
-// entitlement" for the full design and what the captain must configure in
-// Stripe. Both vars are required to enable it; either alone is a
-// misconfiguration, not a partial feature.
+// entitlement" for the full design and what needs configuring in Stripe.
+// Both vars are required to enable it; either alone is a misconfiguration,
+// not a partial feature.
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY || "";
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
-// Default grace period on a lapsed/failed subscription: 3 days. This is a
-// product/support-burden call the captain hasn't made yet — see README. Err
-// generous: a false allow costs a few days of service, a false deny costs a
-// customer's stream.
+// Default grace period on a lapsed/failed subscription: 3 days — see
+// README.md. Err generous: a false allow costs a few days of service, a
+// false deny costs a customer's stream.
 const ENTITLEMENT_GRACE_SECONDS = Number(process.env.ENTITLEMENT_GRACE_SECONDS) || 3 * 24 * 60 * 60;
 // Overridable only for tests (a local stub server) — production always talks
 // to real Stripe.
@@ -95,8 +93,8 @@ const entitlementStore = (MULTI_TENANT && STRIPE_SECRET_KEY && STRIPE_WEBHOOK_SE
     })
   : null;
 
-// Beta allowlist (see env var comment above): a captain-curated set of Twitch
-// ids that bypass the *payment* check only — verifyTwitchUser() still has to
+// Beta allowlist (see env var comment above): an operator-curated set of
+// Twitch ids that bypass the *payment* check only — verifyTwitchUser() still has to
 // resolve the caller's access token to one of these ids first, exactly like
 // a paying subscriber. Comma-separated; trimmed and empty entries dropped so
 // a stray comma or blank env var can never widen to "everybody". Only
@@ -116,7 +114,7 @@ const BETA_ALLOWLIST_TWITCH_IDS = new Set(
 // entitlement configured), same gating as the env var list itself.
 // BETA_ALLOWLIST_REMOTE_TIMEOUT_MS is a test-only seam (a local stub server
 // that never responds, to exercise the timeout path fast) — not
-// captain-facing, not documented in README.md, same convention as
+// operator-facing, not documented in README.md, same convention as
 // TWITCH_HELIX_BASE/STRIPE_API_BASE above.
 const remoteAllowlist = (MULTI_TENANT && entitlementStore && process.env.BETA_ALLOWLIST_REMOTE_URL)
   ? createRemoteAllowlist({
@@ -394,8 +392,8 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Stripe webhook — see README.md "Stripe entitlement" for what the captain
-  // registers this URL as, and tools/stripe-entitlement.js for the design.
+  // Stripe webhook — see README.md "Stripe entitlement" for what to
+  // register this URL as, and tools/stripe-entitlement.js for the design.
   // Multi-tenant mode only, and only once STRIPE_SECRET_KEY +
   // STRIPE_WEBHOOK_SECRET are both set. The signature is verified BEFORE the
   // body is trusted at all — an unverified endpoint would let anyone grant

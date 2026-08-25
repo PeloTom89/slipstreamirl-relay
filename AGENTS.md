@@ -51,7 +51,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   database. **One exception:** `createSubscriptionMetadataWriter` performs a
   single narrowly-scoped write (`POST /v1/subscriptions/:id`,
   `metadata.twitch_id` only) from the `checkout.session.completed` handler,
-  because `client_reference_id` — Checkout's identity field when the captain
+  because `client_reference_id` — Checkout's identity field when the operator
   uses that mechanism instead of a metadata-templated Payment Link — lives
   only on the Checkout Session and nowhere `reconcile()` can re-query later;
   without this write the identity link died with the in-memory cache on
@@ -70,24 +70,24 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `POST /channel-token`'s entitlement check — Twitch identity verification is
   never skipped, and the check is only reachable when `entitlementStore`
   exists (i.e. Stripe is otherwise configured). See README.md "Beta
-  allowlist" for the full contract; the captain must clear it before charging
+  allowlist" for the full contract; the operator must clear it before charging
   real customers.
 - `tools/beta-allowlist-remote.js` (`BETA_ALLOWLIST_REMOTE_URL`) is the
-  optional remote source merged into that same allowlist, so the captain can
+  optional remote source merged into that same allowlist, so the operator can
   add a tester without an env var change (a redeploy drops connections and
   wipes in-memory ride state). Its one load-bearing rule: a fetch that fails,
   or parses to **zero** valid ids, must never replace the last known good
   list — that's what stops a network blip or a typo/garbage source from
   silently revoking every beta tester. Any change to its fetch/parse path
   needs a test proving that rule still holds, not just a happy-path test —
-  see README.md "Adding a tester without a redeploy" for the full design.
+  see README.md "Beta allowlist" for the full design.
 - Two env vars exist purely as test seams and are never meant to be set in
   production: `TWITCH_HELIX_BASE` and `STRIPE_API_BASE` (both default to the
   real API hosts). Integration tests point these at a local stub HTTP server
   so `tools/relay-entitlement.test.mjs` can exercise `POST /channel-token`
   and `POST /stripe-webhook` end-to-end without live Twitch or Stripe
-  credentials. Don't document these in README.md's captain-facing env var
-  tables — they're not something he ever needs to set.
+  credentials. Don't document these in README.md's operator-facing env var
+  tables — they're not something the operator ever needs to set.
 
 ## Maintaining this file
 

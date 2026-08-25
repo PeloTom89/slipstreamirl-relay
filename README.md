@@ -9,6 +9,9 @@ Strava.
 Phone (the [app](https://github.com/PeloTom89/slipstreamirl-app)) → this relay →
 your OBS browser source. No RTIRL, no third-party location service.
 
+**Status: beta.** The free, self-hosted deploy below is currently the only way
+to run this. There's no live hosted service to sign up for.
+
 ## What it does
 
 - Receives GPS, speed, distance, and BLE sensor data (power/cadence/heart rate)
@@ -72,6 +75,42 @@ channel push token issuance, multi-tenant mode), `POST /stripe-webhook`
 - Query params on both overlays: `?embed=1` (flush, no rounded corners — used by
   the in-app preview/Karoo embed), `?wind=off`, `?units=metric`, `?trail=off`, `?north=1`.
 
+## Deploy
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/PeloTom89/slipstreamirl-relay.git)
+
+1. Create a **Public** Twitch app at <https://dev.twitch.tv/console/apps>; copy the **Client ID**.
+2. Click Deploy (or Render → New → Blueprint → this repo). Paste the Client ID into
+   `TWITCH_CLIENT_ID`; Render generates `RELAY_TOKEN`. Deploy.
+3. Copy your service URL (e.g. `https://irl-stream-control.onrender.com`).
+4. On the Twitch app, add `<your-url>/app-redirect` as an OAuth Redirect URL (exact match).
+5. In the app, enter the relay URL + token under **Relay Server**. In OBS, add a
+   Browser Source for `<your-url>/overlay` and/or `<your-url>/karoo`.
+
+### Env vars that matter for a normal deploy
+
+- `TWITCH_CLIENT_ID` — your Twitch app Client ID.
+- `RELAY_TOKEN` — shared secret the **sender** (app) must present; overlays are
+  read-only and need no token.
+- `CLIENT_SECRET` *(optional)* — enables chat badge images via Twitch Helix.
+- `ANTHROPIC_API_KEY` *(optional)* — enables the Voice Ride Plan title-generation
+  endpoint (`/ai/twitch-title`).
+- `GITHUB_CONTENT_PAT` *(optional)* — lets `/ride-summary` commit a dictated
+  post-ride summary into this repo via the GitHub Contents API, for the Strava
+  workflow above to pick up.
+
+Everything below (`MULTI_TENANT`, `STRIPE_*`, `BETA_ALLOWLIST_*`) is optional
+and off by default; a plain deploy with just the vars above behaves exactly
+as described in this section.
+
+### Notes
+
+- **Cold start:** the free Render tier sleeps after ~15 min idle (30–50s to wake).
+  Connect a minute before going live.
+- **Single-tenant by default:** one streamer per relay (one token, one room) —
+  unchanged unless you opt into **multi-tenant mode** (below).
+- The token is visible in the served control page's JS, so treat the relay URL as private.
+
 ## Push protocol
 
 The app pushes JSON to `POST /push?token=…` (in multi-tenant mode,
@@ -100,11 +139,9 @@ allowed in both `/push` validation and `broadcast()`, or it's silently dropped.*
 
 ## Multi-tenant mode
 
-Off by default — every free/BYO deploy and the captain's own existing deployment
-keep working exactly as documented above, with no config change. This is an
-**opt-in mode of the same `server.js`**, not a fork, for hosting many streamers'
-rooms from one relay instance (the paid/turnkey tier). See `ROADMAP.md` for the
-product context.
+Off by default — every deploy keeps working exactly as documented above, with
+no config change. This is an **opt-in mode of the same `server.js`**, not a
+fork, for hosting more than one streamer's room from a single relay instance.
 
 **Enable it** with two env vars:
 
@@ -151,409 +188,30 @@ any other.
 
 **Issuing a token.** Two ways, and both remain available:
 
-- **Automatic, entitlement-gated (`POST /channel-token`)** — see **Stripe
-  entitlement** below. This is the path a real paying customer's app should
-  use, and it only issues a token to someone with an active (or recently
-  active, see grace period) Stripe subscription.
-- **Manual (ops tool, unaffected)** — for the friends-scale phase, or any
-  channel you want to run without wiring up Stripe at all:
+- **Manual (ops tool)** — the simplest path for any channel you want to run
+  without wiring up Stripe at all:
   ```
   RELAY_JWT_SECRET=... node tools/mint-channel-token.js <channelId> [ttlSeconds]
   ```
-  `/channel-token` deliberately falls back to unavailable (503) rather than
-  issuing anything when `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` aren't
-  both set — this tool keeps working exactly as before in that case.
+- **Automatic, entitlement-gated (`POST /channel-token`)** — see **Stripe
+  entitlement** below. This path only issues a token to someone with an
+  active (or recently active, see grace period) Stripe subscription, and
+  falls back to unavailable (503) rather than issuing anything when Stripe
+  isn't configured — in which case the manual tool above keeps working
+  exactly as before.
 
 The `exp` claim is what makes entitlement expiry-based rather than a live
 per-push billing check — see **Stripe entitlement** below for why that
 matters.
 
 **Not in scope of this mode:** Redis, multi-instance fan-out, or any
-horizontal scaling — a single instance handles far more load than this will
-see at friends-scale. Ride data is still never persisted to disk in this mode
+horizontal scaling — a single instance handles far more load than typical
+usage will see. Ride data is still never persisted to disk in this mode
 either — per-channel state is in-memory only, same privacy property as
-single-tenant mode (see **Notes** below). The entitlement cache added below
+single-tenant mode (see **Notes** above). The entitlement cache added below
 lives in its own separate in-memory `Map`, keyed by Twitch id — it never
 touches, and is never touched by, the per-channel ride-state `Map`, so adding
 billing state hasn't made ride data durable as a side effect.
-
-## Stripe entitlement
-
-Gates `POST /channel-token` (above) on a paying Stripe subscription. Opt-in,
-on top of multi-tenant mode: unset `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`
-and this whole feature is inert — `/channel-token` just answers 503 and
-manual minting keeps working, same as before this existed.
-
-### The design question: where does "who has paid" live?
-
-This relay deploys on **Render's Free plan** (`render.yaml`): ephemeral
-filesystem, sleeps after ~15 minutes idle. A local file, or a plain in-memory
-map with nothing behind it, would silently un-entitle every paying customer
-on the next restart or sleep — the worst possible bug for this feature to
-have, and one that would fail completely silently.
-
-**Chosen: Stripe is the sole source of truth, with an in-memory cache that
-Stripe itself can always rebuild.** No durable local store exists, or is
-needed, for either subscription status or the Twitch↔Stripe identity link —
-**with one narrow, deliberate exception**, explained below:
-
-- The identity link (which Stripe customer is which Twitch streamer) lives in
-  **Stripe's own `metadata.twitch_id`** on the Subscription — not in anything
-  this relay stores. Almost everything this code does is a read: it never
-  creates a Customer, Subscription, Price, Product, or Payment Link, and it
-  never touches billing/status. The one exception is `metadata.twitch_id`
-  itself — see **Identity linking** below for why a write turned out to be
-  required here, and **What the write can and cannot do** for how narrowly
-  it's scoped.
-- A short-lived in-memory cache (`tools/stripe-entitlement.js`), keyed by
-  Twitch id, is kept warm by webhooks so the common case — a streamer whose
-  process already knows about them — needs no network call.
-- On a **cache miss** (a Twitch id this process has never seen — e.g. right
-  after a Render sleep/restart, when the in-memory cache is empty by
-  construction — or an entry that's aged past its grace window), the relay
-  reconciles with **one read-only Stripe Search API call**
-  (`GET /v1/subscriptions/search?query=metadata['twitch_id']:'<id>'`). This is
-  what makes a restart harmless: nothing durable was ever needed *in this
-  relay*, because Stripe already durably holds both the identity link and the
-  subscription status — precisely because the identity link is durably
-  written into Stripe the moment it's known (see below), not left to an
-  in-memory cache that a restart would erase.
-
-This was evaluated against the two alternatives named in the design brief:
-a **local durable store** was rejected because it requires infrastructure
-the captain hasn't authorized or provisioned (Render's free plan has none);
-a pure **"always query Stripe" model** and a **"webhook cache + reconciliation
-on miss" model** turn out to be the same thing here, because there's no
-separate identity table to keep in sync — Stripe's metadata search doubles as
-that table. The cost accepted: an API call on the token-renewal path (not the
-hot GPS-push path — see below), and a soft dependency on Stripe being
-reachable (see **What happens if Stripe is unreachable**).
-
-**The hot path is untouched.** `POST /push` (every ~3s while riding) never
-calls Stripe, never checks entitlement, and never even looks at the
-entitlement cache — it only checks the existing per-channel JWT's signature
-and expiry, exactly as before. Entitlement is checked **once, at token
-issuance/renewal** (`POST /channel-token`, expected ~daily per streamer, not
-per GPS fix). A lapsed subscription means *the next token isn't issued* —
-never "this ride's connection gets torn down." An already-issued token keeps
-working for its full lifetime (currently ~1 day, `tools/channel-token.js`'s
-default TTL) regardless of what happens to the subscription in the meantime.
-
-### Identity linking: Stripe customer ↔ Twitch id
-
-**What the relay expects:** somewhere on the Stripe object a webhook event
-carries — the Subscription, or (fallback) the Customer it belongs to — a
-`metadata.twitch_id` key holding the streamer's Twitch user id. The relay
-checks, in order: (1) `metadata.twitch_id` directly on the event's object,
-(2) `client_reference_id` on a `checkout.session.completed` event, (3) a
-lookup of the Customer's own `metadata.twitch_id` (for events, mainly
-Invoices, whose object has no metadata of its own but does have a `customer`
-id).
-
-**Path (2) needed a write, and here's why.** `client_reference_id` exists
-only on the Checkout Session object — it is never copied onto the
-Subscription by Stripe itself, and a Session isn't something `reconcile()`
-can re-query later (there is no "search Checkout Sessions by
-client_reference_id" that stays valid after the session is gone). Earlier
-versions of this code read `client_reference_id` off
-`checkout.session.completed` and then **silently discarded it** — there was
-no case for that event type in the webhook handler, so the id that had just
-been resolved went nowhere, no cache entry was ever written, and
-`reconcile()` had nothing to find on a later restart. A Payment Link using
-`client_reference_id` never entitled anyone, silently, until this was fixed.
-
-**The fix:** `applyStripeEvent()` now handles `checkout.session.completed`.
-When the id came from `client_reference_id` (i.e. the Session has no
-`metadata.twitch_id` of its own — see path (1)/(3) below for when it does),
-the relay makes **one write**: `POST /v1/subscriptions/:id` with
-`metadata[twitch_id]=<id>`, copying the identity link onto the Subscription
-that Checkout just created. That single write is what makes the link durable
-in **Stripe**, which is exactly this design's own stated principle (Stripe
-is the sole source of truth) — it does not introduce any local durable
-state, and every later lookup (webhooks and `reconcile()`'s search) reads
-the same field it always did.
-
-**What the write can and cannot do.** `createSubscriptionMetadataWriter()`
-(`tools/stripe-entitlement.js`) is the only function in this module that
-performs a Stripe write, and it is invoked from exactly one call site: the
-`checkout.session.completed` case, only when `client_reference_id` is the
-identity source and the Session carries a `subscription` id. It sets exactly
-one metadata key on exactly the Subscription named by that id — the update-a-
-subscription endpoint cannot create, cancel, refund, or change price/status
-on anything, so this cannot be induced into a money-moving or destructive
-call regardless of what a forged/malformed event might contain (the event
-itself is still signature-verified before any of this runs — see **Stripe
-webhook**). If the write fails (Stripe unreachable, bad response), the
-failure is swallowed the same way every other soft-failure in this module
-is: no retry loop, and the subscriber simply isn't entitled until something
-else re-triggers this same code path (support fallback:
-`tools/mint-channel-token.js`).
-
-**Because of this write, `STRIPE_SECRET_KEY` is no longer read-only** — see
-**Env vars** below.
-
-**What the captain needs to set up in Stripe (not built by this change — see
-"Explicitly out of scope"):** when creating the Payment Link (or Checkout
-Session) customers use to subscribe, attach the subscriber's Twitch id
-either as `metadata.twitch_id` on the resulting Subscription/Customer, or as
-`client_reference_id` on the Checkout Session. Two ways to do this, in order
-of how little code they need:
-
-1. **No-code, if your Payment Link supports it:** add a required Custom
-   Field (e.g. "Twitch username or ID") to the Payment Link, then reference
-   it in the Payment Link's own metadata using Stripe's `{{custom_field_key}}`
-   templating syntax, so the field's answer is copied into
-   `metadata.twitch_id` automatically. **Confirm this exact mechanism in your
-   live Stripe Dashboard before relying on it** — this could not be verified
-   without a real account, per this task's constraints (no Stripe account
-   was created, no live Dashboard was used). If you use this path, the relay
-   never needs to write anything — the identity link is already durable in
-   Stripe by the time any webhook fires.
-2. **`client_reference_id` as a query parameter** on the Payment Link URL
-   (`?client_reference_id=<twitch_id>`), which Stripe does copy onto the
-   resulting Checkout Session — confirmed against a real Stripe test account.
-   This requires whatever page constructs that URL to already know the
-   subscriber's Twitch id (out of scope of this change — no purchase/checkout
-   page was built here), but no longer requires any Dashboard templating
-   setup, and — as of this change — the relay durably persists the link onto
-   the Subscription itself the moment Checkout completes, via the write
-   described above.
-
-Either way, this is genuinely the fiddliest part of this feature and the
-part most likely to need iteration once real Stripe checkout is live — this
-code accepts the identity signal from any of the three lookup paths above
-specifically so it isn't locked into one exact Dashboard mechanism.
-
-### Events handled
-
-| Stripe event | Effect |
-|---|---|
-| `customer.subscription.created` | Entitles through `current_period_end` + grace, if `status` is `active`/`trialing` |
-| `customer.subscription.updated` | Same as above if entitling; otherwise treated as a lapse (e.g. `past_due`, `unpaid`, `canceled`) |
-| `customer.subscription.deleted` | Lapse — grace period starts now |
-| `invoice.payment_failed` | Lapse — grace period starts now |
-| `checkout.session.completed` | No entitlement effect by itself — writes `metadata.twitch_id` onto the new Subscription if `client_reference_id` is the identity source (see **Identity linking** above); the following `customer.subscription.created` grants entitlement as usual |
-
-A "lapse" never *extends* entitlement past what an active subscription
-already had — it only caps it at `now + grace`, so a mid-period cancellation
-doesn't accidentally grant the rest of that period. A lapse for a Twitch id
-this process has never seen still opens a fresh grace window rather than
-denying outright — deliberately favoring a false *allow* (a few extra days of
-service) over a false *deny* (a customer's stream cut off), per the design
-brief's stated priority.
-
-`invoice.paid`/`customer.subscription.trial_will_end` and other Stripe events
-are received but ignored — `customer.subscription.updated` already fires on
-renewal (period-end change with `status` staying `active`), so a dedicated
-`invoice.paid` handler was judged redundant. **This assumption could not be
-verified against a live Stripe account's actual event stream** — worth
-confirming once real checkout traffic exists.
-
-### What happens if Stripe is unreachable
-
-Only affects `POST /channel-token` (renewal), never a live ride. If that
-Twitch id has ever been positively confirmed entitled before (even if that's
-since lapsed past its grace window), the relay trusts that rather than
-guessing — a transient Stripe outage shouldn't cut off someone who was
-already a known subscriber. If the Twitch id has never been seen at all, or
-has only ever been confirmed NOT entitled, the request is refused (403 "not
-entitled") rather than inventing an answer.
-
-### Grace period
-
-**`ENTITLEMENT_GRACE_SECONDS`** — defaults to **3 days (259200)**. **This
-default is not the captain's confirmed choice — it needs his sign-off.** Err
-generous per the design brief: a false allow costs a few days of service, a
-false deny costs a customer's stream. Raise it if that tradeoff feels too
-tight; Stripe's own dunning/retry window (configurable in the Stripe
-Dashboard, separate from this setting) can already run several days on its
-own before a subscription flips to `past_due`/`unpaid`, so this grace period
-stacks on top of whatever Stripe's own retries already bought.
-
-### Beta allowlist (TestFlight-style testing, no subscription required)
-
-The captain is running an internal beta before hosted relay goes
-subscription-only, and wants a handful of named testers to use it for free
-without setting up Stripe test subscriptions for each of them. **A blanket
-"entitlement off" switch would be wrong for this:** the relay is a public
-internet endpoint — `POST /channel-token` is reachable by anyone with a
-Twitch account, whether or not they're one of the captain's testers.
-TestFlight restricts who can *install the app*, not who can *reach the
-server*; a global bypass would hand free hosted relay access to anyone who
-found the URL.
-
-Instead, `BETA_ALLOWLIST_TWITCH_IDS` is an explicit, per-person, comma-
-separated list of Twitch user ids exempt from the Stripe subscription check.
-**Absent or empty means nobody is allowlisted — never "everybody."** Stray
-commas/whitespace parse to nothing, not an accidental match.
-
-- Only bypasses the *payment* check. Identity is never weakened: the caller
-  still has to present a Twitch access token that `verifyTwitchUser()`
-  resolves to the allowlisted id, exactly like a paying subscriber — the
-  allowlist is never trusted as a claimed id on its own.
-- Only reachable when Stripe entitlement is otherwise configured
-  (`STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` both set) — this is not a way
-  to run hosted mode with no Stripe configuration at all. With Stripe unset,
-  `/channel-token` still answers 503 regardless of this variable.
-- Tokens issued via the allowlist are indistinguishable downstream — same
-  JWT shape, same push/isolation behavior as a paying subscriber's token.
-- **Visible by design, not silent.** Every allowlist-issued token logs a line
-  naming the Twitch id, and the relay's root status page appends the current
-  allowlisted-id count next to the channel count (e.g. `(multi-tenant, 2
-  channels, 3 beta allowlisted)`) whenever the list is non-empty, so the
-  captain can see at a glance that free access is switched on and for how
-  many people.
-
-**Clear `BETA_ALLOWLIST_TWITCH_IDS` before charging real customers.** It has
-no expiry and no separate kill switch beyond unsetting the env var — leaving
-it set after going live would keep granting free access to whoever's still
-on the list.
-
-#### Adding a tester without a redeploy: `BETA_ALLOWLIST_REMOTE_URL`
-
-Changing an env var redeploys the Render service — roughly a minute, and it
-drops every open connection and clears all in-memory ride state (this relay
-keeps no durable storage at all — see **The design question: where does
-"who has paid" live?** above). The captain wanted to add a beta tester
-without doing that. `BETA_ALLOWLIST_REMOTE_URL` points the relay at a URL it
-polls (default every 5 minutes,
-`BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS` to change that) for **additional**
-allowlisted Twitch ids — the fetched ids are *merged with*
-`BETA_ALLOWLIST_TWITCH_IDS`, never replacing it. Editing the URL's content
-(e.g. a Gist) takes effect on the next poll — no redeploy.
-
-**The source content is the same comma/newline-separated numeric-id format
-as the env var.** A [GitHub Gist](https://gist.github.com) raw URL
-(`https://gist.githubusercontent.com/<user>/<gist_id>/raw/<file>`) is the
-obvious candidate — free, no infra, editable from a phone. **⚠️ Do not commit
-this file to this repo.** Render auto-deploys on every push to `main`, so a
-list committed here would trigger the very redeploy this feature exists to
-avoid, defeating the entire point. Use a Gist or any other host that isn't
-this repository.
-
-**A public Gist is effectively public.** Twitch user ids aren't secret by
-themselves, but the *list* discloses who currently has free hosted-relay
-access. Use a **secret** Gist (unlisted, not indexed/searchable — still
-technically reachable by anyone with the raw URL, same trust model as the
-Payment Link URLs already in this README) if that disclosure matters to you.
-
-**Failure handling is deliberately conservative** (`tools/beta-allowlist-remote.js`):
-
-- A fetch that errors, times out, or returns a non-2xx status **keeps the
-  last known good list** — a tester mid-beta never loses access because a
-  Gist was briefly unreachable. It never falls back to "nobody," only to
-  whatever was last confirmed good (or the env var's own ids, if nothing has
-  ever been fetched successfully yet).
-- A response that parses to **zero valid ids** (garbage, an HTML error page,
-  an empty body, a typo) is treated the same way — **ignored, list kept as
-  it was.** This means the remote source can only ever *add or change* which
-  testers are allowlisted, never *silently revoke everyone* through a
-  broken/misconfigured URL. (To intentionally stop granting access via a
-  remote id, edit the source to a list that no longer contains it — a
-  non-empty list that drops one id **does** take effect; making the list
-  empty in one edit does not, by the rule above. Fully clearing remote-
-  granted access requires unsetting `BETA_ALLOWLIST_REMOTE_URL`, which is a
-  redeploy.)
-- The fetch is bounded: a timeout and a maximum response size (both fixed,
-  sane defaults — this is a short list of ids, never expected to be large).
-- Content is validated strictly: only entries that look like a real Twitch
-  numeric id are accepted; anything else (letters, punctuation, HTML tags)
-  is silently dropped, and the number of ids accepted from one fetch is
-  capped. A compromised or fat-fingered source can only ever grant access to
-  ids that pass this validation — never anything else.
-
-**Visibility, extended:** the root status line's allowlisted-id count already
-includes remote-sourced ids (env var + remote, deduplicated), and — whenever
-a remote source is configured — the status line also shows whether the last
-poll succeeded, e.g. `(multi-tenant, 2 channels, 4 beta allowlisted, remote
-ok)` vs `... remote stale)` (last poll failed or was unparseable, serving the
-prior list) vs `... remote never-fetched)` (no successful poll yet at all,
-serving only the env var's ids). Every successful/failed poll is also logged.
-
-### Env vars
-
-- `STRIPE_SECRET_KEY` — Stripe secret API key. Used mostly for read calls
-  (`GET /v1/subscriptions/search`, `GET /v1/customers/:id`), plus **one
-  narrowly-scoped write**: `POST /v1/subscriptions/:id` to set
-  `metadata.twitch_id`, only from the `checkout.session.completed` handler,
-  only when `client_reference_id` is the identity source — see **Identity
-  linking** above for why, and exactly what that write can and cannot touch.
-- `STRIPE_WEBHOOK_SECRET` — the signing secret Stripe shows when you register
-  the webhook endpoint (below). Required to verify `Stripe-Signature` —
-  **without this, the endpoint would accept a forged event from anyone**, so
-  both this and `STRIPE_SECRET_KEY` must be set together or entitlement stays
-  off.
-- `ENTITLEMENT_GRACE_SECONDS` *(optional, default `259200` = 3 days)* — see
-  above.
-- `BETA_ALLOWLIST_TWITCH_IDS` *(optional)* — see **Beta allowlist** above.
-- `BETA_ALLOWLIST_REMOTE_URL` *(optional)* — see **Adding a tester without a
-  redeploy** above.
-- `BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS` *(optional, default `300` = 5
-  min)* — how often the URL above is re-polled.
-
-Both `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` are unset on every free/BYO
-deploy and on the captain's own deployment until he opts in — this is purely
-additive to multi-tenant mode.
-
-### What the captain needs to create in Stripe (not done by this change)
-
-Per this task's scope, **no Stripe account, product, price, Payment Link,
-webhook, or customer was created or modified** — only the relay code that
-consumes them. Before this works end-to-end, the captain needs to:
-
-1. Create the subscription Product/Price and a Payment Link (or hosted
-   Checkout) in the Stripe Dashboard — the relay never cares what the price is.
-2. Configure that Payment Link/Checkout to attach `metadata.twitch_id` to the
-   resulting Subscription or Customer — see **Identity linking** above.
-3. Register a webhook endpoint at `https://<your-relay-url>/stripe-webhook`,
-   subscribed to at least: `customer.subscription.created`,
-   `customer.subscription.updated`, `customer.subscription.deleted`,
-   `invoice.payment_failed`, `checkout.session.completed` (this last one is
-   what carries `client_reference_id` — see **Identity linking** — omitting
-   it means that identity path never works). Copy the signing secret Stripe
-   shows into `STRIPE_WEBHOOK_SECRET`.
-
-   > **⚠️ The URL must end in `/stripe-webhook`, not the bare root.** The
-   > relay's root path is its status page, which returns `200 OK` to any
-   > request — including Stripe's. Point the endpoint at the root by mistake
-   > and Stripe will report every delivery as successful (`pending_webhooks`
-   > stays 0, no retries queued, dashboard looks healthy) while the relay
-   > processes nothing and entitlement silently never works, with no error
-   > surfaced anywhere. This is a real incident that happened while wiring up
-   > a live test account, not a hypothetical.
-   >
-   > To confirm the endpoint is right, send it an unsigned request: a correctly
-   > configured `/stripe-webhook` endpoint **rejects** it with `400 bad
-   > signature`. A misrouted endpoint pointed at the root instead returns `200`
-   > and the relay's status text. That difference is the reliable way to tell
-   > them apart, and it's been verified live against the deployed service.
-4. Set `STRIPE_SECRET_KEY` to a **secret** (not publishable) API key.
-5. Confirm the grace period default above, and the identity-linking mechanism
-   in (2) against your live Dashboard — both are flagged in this README as
-   unverified without a real Stripe account.
-
-### What could not be verified without a live Stripe account
-
-- Whether the exact no-code "Custom Field → `{{template}}` → subscription
-  metadata" mechanism described under **Identity linking** is available for
-  every Payment Link type in the current Stripe Dashboard.
-- Whether `customer.subscription.updated` reliably fires on every renewal in
-  practice (assumed here, based on Stripe's documented webhook model, but not
-  observed against a real event stream).
-- Real-world webhook delivery latency/retries, and how Stripe's own dunning
-  schedule (Dashboard-configured) interacts with this relay's independent
-  grace period in practice.
-- The `POST /v1/subscriptions/:id` metadata write itself (`checkout.session.completed`
-  → `createSubscriptionMetadataWriter`) is implemented per Stripe's documented
-  API and covered by this repo's tests against a stub Stripe, but has not
-  been exercised against a live Stripe account within this change.
-
-### Discord (not built)
-
-The entitlement store's `isEntitled()` check is structured so a second
-source could be OR'd in later (any source that can say "entitled until
-timestamp X" for a Twitch id) without changing the token-issuance code path
-or the JWT format — but no Discord integration exists, per this task's scope.
 
 ## Strava/YouTube auto-post workflow
 
@@ -587,7 +245,7 @@ anything real unless you ask them to):
 | `title_override` + `opener_override` | skip Claude and apply this exact reviewed text to the activity (replaces the description instead of appending) |
 | `list_recent` | logs your 10 most recent activity ids/names/dates — no Claude/Mapbox calls, no YouTube check |
 
-### GitHub Actions secrets (separate from the Render env vars below)
+### GitHub Actions secrets (separate from the Render env vars above)
 
 `YOUTUBE_API_KEY`, `YOUTUBE_CHANNEL_ID`, `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET`,
 `STRAVA_REFRESH_TOKEN`, `ANTHROPIC_API_KEY` (required); `MAPBOX_TOKEN` (optional —
@@ -595,53 +253,128 @@ enables real road-name matching); `YOUTUBE_OAUTH_CLIENT_ID` /
 `YOUTUBE_OAUTH_CLIENT_SECRET` / `YOUTUBE_OAUTH_REFRESH_TOKEN` (optional — mirrors
 the description onto the YouTube video too).
 
-## Deploy
+## Stripe entitlement
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/PeloTom89/slipstreamirl-relay.git)
+This is an optional, opt-in layer on top of multi-tenant mode: it lets a
+relay operator gate `POST /channel-token` (channel push-token issuance) on an
+active Stripe subscription, instead of minting tokens by hand with
+`tools/mint-channel-token.js`. It's part of the public code, so it's
+documented here — but there's no hosted subscription product to sign up for;
+if you're self-hosting without Stripe configured, this section doesn't apply
+to you and `/channel-token` just answers 503.
 
-1. Create a **Public** Twitch app at <https://dev.twitch.tv/console/apps>; copy the **Client ID**.
-2. Click Deploy (or Render → New → Blueprint → this repo). Paste the Client ID into
-   `TWITCH_CLIENT_ID`; Render generates `RELAY_TOKEN`. Deploy.
-3. Copy your service URL (e.g. `https://irl-stream-control.onrender.com`).
-4. On the Twitch app, add `<your-url>/app-redirect` as an OAuth Redirect URL (exact match).
-5. In the app, enter the relay URL + token under **Relay Server**. In OBS, add a
-   Browser Source for `<your-url>/overlay` and/or `<your-url>/karoo`.
+**Design in one paragraph:** this relay deploys on Render's free plan
+(ephemeral filesystem, sleeps on idle), so it keeps **no durable local
+record** of who has paid. Stripe itself is the sole source of truth for both
+subscription status and the Twitch↔Stripe identity link
+(`metadata.twitch_id` on the Subscription). A webhook-warmed in-memory cache
+is purely a speed optimization; a cache miss or restart self-heals via one
+read-only Stripe Search API call. The **only** write this module makes is
+narrowly scoped: when a Checkout Session's `client_reference_id` (rather than
+`metadata.twitch_id`) carries the identity link, `checkout.session.completed`
+triggers a single `POST /v1/subscriptions/:id` call that copies that id onto
+`metadata.twitch_id` — because `client_reference_id` lives only on the
+Session, which can't be re-queried later, and without this write the link
+would be lost on the next restart. That endpoint can only set metadata; it
+can't create, cancel, refund, or change price/status on anything. See
+`tools/stripe-entitlement.js` for the full implementation and
+`tools/stripe-entitlement.test.mjs` for its test coverage.
 
-### Render env vars (the always-on service)
+**The hot path is untouched.** `POST /push` (every ~3s while riding) never
+calls Stripe and never checks entitlement — it only checks the per-channel
+JWT's signature and expiry. Entitlement is checked once, at token
+issuance/renewal (`POST /channel-token`), not per GPS fix. A lapsed
+subscription means the *next* token isn't issued; an already-issued token
+keeps working for its full lifetime regardless of what happens to the
+subscription afterward.
 
-- `TWITCH_CLIENT_ID` — your Twitch app Client ID.
-- `RELAY_TOKEN` — shared secret the **sender** (app) must present; overlays are
-  read-only and need no token.
-- `CLIENT_SECRET` *(optional)* — enables chat badge images via Twitch Helix.
-- `ANTHROPIC_API_KEY` *(optional)* — enables the Voice Ride Plan title-generation
-  endpoint (`/ai/twitch-title`).
-- `GITHUB_CONTENT_PAT` *(optional)* — lets `/ride-summary` commit a dictated
-  post-ride summary into this repo via the GitHub Contents API, for the Strava
-  workflow above to pick up.
-- `MULTI_TENANT` / `RELAY_JWT_SECRET` *(optional)* — enable multi-tenant mode.
-  See **Multi-tenant mode** above; unset on every free/BYO deploy.
-- `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` / `ENTITLEMENT_GRACE_SECONDS`
-  *(optional, multi-tenant mode only)* — enable Stripe-backed entitlement
-  gating on channel-token issuance. See **Stripe entitlement** above; unset
-  on every free/BYO deploy and until the captain opts in.
-- `BETA_ALLOWLIST_TWITCH_IDS` *(optional, multi-tenant + Stripe entitlement
-  only)* — comma-separated Twitch ids exempt from the subscription check, for
-  beta testing. See **Beta allowlist** above; **clear this before charging
-  real customers.**
-- `BETA_ALLOWLIST_REMOTE_URL` / `BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS`
-  *(optional, multi-tenant + Stripe entitlement only)* — polls a URL (e.g. a
-  Gist raw link) for additional allowlisted ids, merged with
-  `BETA_ALLOWLIST_TWITCH_IDS`, so the captain can add a beta tester without a
-  redeploy. See **Adding a tester without a redeploy** above.
+**If Stripe is unreachable:** only `/channel-token` (renewal) is affected,
+never a live ride. A Twitch id that's been positively confirmed entitled
+before is trusted through a transient outage; an id that's never been seen,
+or was last confirmed *not* entitled, is refused (`403`).
 
-## Notes
+**Grace period:** `ENTITLEMENT_GRACE_SECONDS` (default 3 days) — how long a
+lapsed/failed subscription still renews tokens before renewal is refused.
+Errs generous, since a false allow costs a few days of service while a false
+deny cuts off someone's stream.
 
-- **Cold start:** the free Render tier sleeps after ~15 min idle (30–50s to wake).
-  Connect a minute before going live.
-- **Single-tenant by default:** one streamer per relay (one token, one room) —
-  every free/BYO deploy, unchanged. **Multi-tenant mode** (above) is an opt-in
-  flag on this same `server.js` for hosting many streamers on one relay,
-  keyed by Twitch ID, with Twitch-identity-verified, Stripe-entitlement-gated
-  token issuance (**Stripe entitlement** above); remaining work (app-side
-  auto-provisioning, Discord as a second entitlement source) is in `ROADMAP.md`.
-- The token is visible in the served control page's JS, so treat the relay URL as private.
+**Events handled:** `customer.subscription.created` / `.updated` /
+`.deleted`, `invoice.payment_failed`, and `checkout.session.completed` (only
+for the identity-link write above — entitlement itself follows the
+subsequent `customer.subscription.created`). See
+`tools/stripe-entitlement.js` for exact behavior per event.
+
+**If you want to run this yourself:** create a subscription Product/Price and
+Payment Link (or Checkout) in your Stripe Dashboard, configure it to attach
+`metadata.twitch_id` to the resulting Subscription/Customer (or use
+`client_reference_id` on the Checkout Session — see the write behavior
+above), and register a webhook endpoint at `https://<your-relay-url>/stripe-webhook`
+subscribed to the events listed above. Set `STRIPE_SECRET_KEY` (a **secret**,
+not publishable, key) and `STRIPE_WEBHOOK_SECRET` (shown when you register
+the webhook) as env vars.
+
+> **⚠️ The webhook URL must end in `/stripe-webhook`, not the bare root.**
+> The relay's root path is its status page, which returns `200 OK` to any
+> request — including Stripe's. Point the endpoint at the root by mistake and
+> Stripe will report every delivery as successful while the relay processes
+> nothing and entitlement silently never works, with no error surfaced
+> anywhere. To confirm the endpoint is right, send it an unsigned request: a
+> correctly configured `/stripe-webhook` **rejects** it with `400 bad
+> signature`; a misrouted endpoint pointed at the root instead returns `200`.
+
+### Beta allowlist
+
+`BETA_ALLOWLIST_TWITCH_IDS` is an explicit, per-person, comma-separated list
+of Twitch user ids exempt from the Stripe subscription check — useful for
+letting a handful of testers use entitlement-gated multi-tenant mode without
+setting up Stripe subscriptions for each of them.
+
+- Absent or empty means nobody is allowlisted — never "everybody." Stray
+  commas/whitespace parse to nothing, not an accidental match.
+- Only bypasses the *payment* check. Identity is never weakened: the caller
+  still has to present a Twitch access token that resolves to the
+  allowlisted id, exactly like a paying subscriber.
+- Only reachable when Stripe entitlement is otherwise configured — not a way
+  to run hosted mode with no Stripe configuration at all.
+- Tokens issued via the allowlist are indistinguishable downstream from a
+  paying subscriber's token.
+- Every allowlist-issued token logs a line naming the Twitch id, and the
+  relay's root status page shows the current allowlisted-id count next to
+  the channel count whenever the list is non-empty.
+- Clear this env var before relying on the subscription check for real — it
+  has no expiry and no separate kill switch beyond unsetting the var.
+
+**`BETA_ALLOWLIST_REMOTE_URL`** lets you add a tester without a redeploy
+(changing an env var redeploys the service, dropping connections and
+clearing all in-memory ride state). It points the relay at a URL — a
+[GitHub Gist](https://gist.github.com) raw link is the obvious choice — that
+it polls (default every 5 minutes, `BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS`)
+for additional allowlisted ids, in the same comma/newline-separated numeric
+format as the env var. Fetched ids are *merged with*
+`BETA_ALLOWLIST_TWITCH_IDS`, never replacing it. **Don't commit this list to
+this repo** — Render auto-deploys on every push to `main`, which would
+trigger the redeploy this feature exists to avoid. A public Gist discloses
+who has free access, so use a secret (unlisted) Gist if that matters to you.
+
+Failure handling is deliberately conservative
+(`tools/beta-allowlist-remote.js`): a fetch that errors, times out, returns
+non-2xx, or parses to zero valid ids **keeps the last known good list**
+rather than falling back to empty — so a network blip or a bad edit can
+never silently revoke every tester at once. The fetch is bounded (timeout +
+max response size), and only entries that look like real Twitch numeric ids
+are accepted. The root status line shows whether the remote source is
+`ok`/`stale`/`never-fetched`.
+
+### Env vars
+
+- `STRIPE_SECRET_KEY` — Stripe secret API key. Used mostly for read calls,
+  plus one narrowly-scoped write (see above).
+- `STRIPE_WEBHOOK_SECRET` — the signing secret Stripe shows when you register
+  the webhook endpoint. Required to verify `Stripe-Signature` — without this,
+  the endpoint would accept a forged event from anyone, so both this and
+  `STRIPE_SECRET_KEY` must be set together or entitlement stays off.
+- `ENTITLEMENT_GRACE_SECONDS` *(optional, default `259200` = 3 days)*.
+- `BETA_ALLOWLIST_TWITCH_IDS` *(optional)* — see **Beta allowlist** above.
+- `BETA_ALLOWLIST_REMOTE_URL` *(optional)* — see **Beta allowlist** above.
+- `BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS` *(optional, default `300` = 5
+  min)* — how often the URL above is re-polled.

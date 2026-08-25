@@ -12,7 +12,7 @@
 //     rebuild it from would silently un-entitle every paying customer on the
 //     next restart/sleep — exactly the failure this module is built to avoid.
 //   - The Twitch<->Stripe identity link lives in Stripe itself, as
-//     `metadata.twitch_id` set on the Subscription. Normally the captain's
+//     `metadata.twitch_id` set on the Subscription. Normally the operator's
 //     Payment Link/Checkout config puts it there directly (see README). The
 //     one exception: `client_reference_id` (Checkout's own field for "who is
 //     this") lives ONLY on the Checkout Session, which reconcile() can never
@@ -90,10 +90,10 @@ function subscriptionPeriodEndSeconds(sub) {
 
 // Finds the Twitch id a Stripe event is about. Checked in order:
 //   1. metadata.twitch_id directly on the event's object (Subscription,
-//      Invoice, or Customer — wherever the captain's Stripe config put it).
+//      Invoice, or Customer — wherever the operator's Stripe config put it).
 //   2. client_reference_id on a checkout.session.completed event (set by a
 //      Payment Link's ?client_reference_id= query param, if that's what the
-//      captain used instead of metadata).
+//      operator used instead of metadata).
 //   3. An injected fetchCustomerMetadata(customerId) lookup, for events (like
 //      most Invoice events) whose object doesn't carry its own metadata but
 //      does carry a `customer` id whose Customer record might.
@@ -179,7 +179,7 @@ function createEntitlementStore({ graceMs, now = Date.now, fetchCustomerMetadata
       case "checkout.session.completed": {
         const session = event.data.object;
         // Only client_reference_id needs a durable write: if metadata.twitch_id
-        // is already on the Session, the captain configured Stripe to carry it
+        // is already on the Session, the operator configured Stripe to carry it
         // onto the Subscription directly (see README "Identity linking"), so
         // there's nothing this module needs to persist itself.
         const viaClientReferenceId = typeof session.client_reference_id === "string" &&
