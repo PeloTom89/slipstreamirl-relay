@@ -270,7 +270,7 @@ describe("createEntitlementStore", () => {
       assert.deepEqual(writes, [{ subscriptionId: "sub_123", twitchId: "streamer-j" }]);
     });
 
-    test("no write when the session already carries metadata.twitch_id directly (captain configured the template mechanism)", async () => {
+    test("no write when the session already carries metadata.twitch_id directly (operator configured the template mechanism)", async () => {
       const writes = [];
       const store = createEntitlementStore({
         graceMs: GRACE_MS,

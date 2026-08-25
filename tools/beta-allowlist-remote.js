@@ -1,5 +1,5 @@
 // tools/beta-allowlist-remote.js — optional remote source for the beta
-// allowlist (server.js's BETA_ALLOWLIST_TWITCH_IDS env var), so the captain
+// allowlist (server.js's BETA_ALLOWLIST_TWITCH_IDS env var), so the operator
 // can add a beta tester by editing a URL (a GitHub Gist raw link is the
 // intended use) instead of redeploying — an env var change redeploys the
 // relay, which drops connections and clears in-memory ride state. CommonJS
