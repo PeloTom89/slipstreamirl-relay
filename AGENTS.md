@@ -170,7 +170,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   body-supplied id), gated on `MULTI_TENANT` + the user store being
   configured. `anthropicApiKey` omitted or `""` clears the stored key
   (`deleteAnthropicKey()`) rather than storing it, reverting that user to the
-  captain's-key fallback. Deliberately does not validate the key against
+  operator's-key fallback. Deliberately does not validate the key against
   Anthropic — that happens naturally the first time it's used. See README.md
   "Per-user Anthropic key" for the full contract;
   `tools/relay-anthropic-key.test.mjs` covers it against stubbed
@@ -186,8 +186,8 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `GITHUB_CONTENT_PAT` is no longer read anywhere in this repo; the workflow's
   `contents: write` permission dropped to `contents: read` accordingly. Gated
   like `/settings/anthropic-key`: `404` outside `MULTI_TENANT`, `503` if the
-  user store isn't configured. The captain's own single-account workflow step
-  reads/clears his summary from the store via the optional `CAPTAIN_TWITCH_ID`
+  user store isn't configured. The operator's own single-account workflow step
+  reads/clears their summary from the store via the optional `CAPTAIN_TWITCH_ID`
   GitHub Actions secret (unset → behaves as if nothing was ever recorded,
   never fails); **Per-user Strava recaps** below reads/clears every other
   linked user's the same way. See README.md "Voice ride summary" for the full
@@ -206,19 +206,19 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   video lookup, no YouTube mirroring, per the approved scope decision; gated
   instead by its own `RECAP_MARKER` string in the activity description (there's
   no YouTube-link check to reuse for idempotency). LLM key selection is each
-  user's own decrypted `anthropicApiKeyEnc` if present, else the captain's
+  user's own decrypted `anthropicApiKeyEnc` if present, else the operator's
   `ANTHROPIC_API_KEY` — graceful degradation, not a hard requirement. Also
   folds in each user's own dictated ride summary (`getRideSummary()` — see
   `POST /ride-summary` above) as `riderNotes` into `recap-writer.mjs`'s
   existing prompt building (unchanged, reused verbatim), clearing it via
   `clearRideSummary()` only after a successful write so a stale note isn't
   reused on the next ride. The new workflow step is **independent of the
-  captain's YOUTUBE_*/single-account secrets** (only needs
+  operator's YOUTUBE_*/single-account secrets** (only needs
   `STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` — shared
   Strava API app — plus `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN`/
-  `TOKEN_ENCRYPTION_KEY`), so a captain without YouTube configured still gets
+  `TOKEN_ENCRYPTION_KEY`), so an operator without YouTube configured still gets
   per-user recaps; it exits cleanly (zero users processed) when those three
-  store secrets are absent. Dedupes the captain's own account (if also linked
+  store secrets are absent. Dedupes the operator's own account (if also linked
   via the store) by Strava **athlete id** (via `strava-client.mjs`'s
   `getAuthenticatedAthlete()`), not Twitch id — the secret-based credential
   and a store-linked credential are two independent tokens for the same

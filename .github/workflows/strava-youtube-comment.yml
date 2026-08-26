@@ -11,7 +11,7 @@ on:
         default: false
         type: boolean
       rider_notes_override:
-        description: 'Optional rider notes to simulate with (dry run only) — the captain''s own dictated summary in the store is usually already consumed by the time you want to preview'
+        description: 'Optional rider notes to simulate with (dry run only) — the operator''s own dictated summary in the store is usually already consumed by the time you want to preview'
         required: false
         default: ''
         type: string
@@ -86,17 +86,17 @@ jobs:
           const S_REFRESH  = process.env.STRAVA_REFRESH_TOKEN;
           const CLAUDE_KEY = process.env.ANTHROPIC_API_KEY;
           const MAPBOX_TOKEN = process.env.MAPBOX_TOKEN;
-          // The captain's own dictated post-ride summary now lives in the durable
-          // per-user store under his own Twitch id (POST /ride-summary), same as
+          // The operator's own dictated post-ride summary now lives in the durable
+          // per-user store under their own Twitch id (POST /ride-summary), same as
           // every other linked rider's — see tools/per-user-recap.mjs and
           // AGENTS.md. CAPTAIN_TWITCH_ID is optional: unset (or the store not
           // configured) just means no dictated notes get folded in here, same as
           // today when nothing was recorded.
           const CAPTAIN_TWITCH_ID = process.env.CAPTAIN_TWITCH_ID;
-          let captainUserStore = null;
+          let ownerUserStore = null;
           if (CAPTAIN_TWITCH_ID && process.env.TOKEN_ENCRYPTION_KEY && process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
             try {
-              captainUserStore = createUserStore({});
+              ownerUserStore = createUserStore({});
             } catch (e) {
               console.log('Could not construct user store for CAPTAIN_TWITCH_ID lookup (non-fatal, no dictated notes this run):', e.message);
             }
@@ -221,15 +221,15 @@ jobs:
           //     when it was actually consumed from there.
           let riderNotes = RIDER_NOTES_OVERRIDE || null;
           let usedStoredRideSummary = false;
-          if (!riderNotes && captainUserStore) {
+          if (!riderNotes && ownerUserStore) {
             try {
-              const stored = await captainUserStore.getRideSummary(CAPTAIN_TWITCH_ID);
+              const stored = await ownerUserStore.getRideSummary(CAPTAIN_TWITCH_ID);
               if (stored && typeof stored.summary === 'string' && stored.summary.trim()) {
                 riderNotes = stored.summary.trim();
                 usedStoredRideSummary = true;
               }
             } catch (e) {
-              console.log('Could not read captain ride summary from store (non-fatal, no dictated notes this run):', e.message);
+              console.log('Could not read operator ride summary from store (non-fatal, no dictated notes this run):', e.message);
             }
           }
 
@@ -313,14 +313,14 @@ jobs:
           }
           console.log(`Updated Strava activity ${activity.id} (title: "${title || detail.name}") with ${videoUrl}`);
 
-          // Consumed — clear the captain's stored ride summary so a stale note
-          // isn't folded into his next ride, mirroring the per-user recap loop's
+          // Consumed — clear the operator's stored ride summary so a stale note
+          // isn't folded into their next ride, mirroring the per-user recap loop's
           // own clearRideSummary() after a successful write (tools/per-user-recap.mjs).
-          if (usedStoredRideSummary && captainUserStore) {
+          if (usedStoredRideSummary && ownerUserStore) {
             try {
-              await captainUserStore.clearRideSummary(CAPTAIN_TWITCH_ID);
+              await ownerUserStore.clearRideSummary(CAPTAIN_TWITCH_ID);
             } catch (e) {
-              console.log('Failed to clear captain ride summary (non-fatal):', e.message);
+              console.log('Failed to clear operator ride summary (non-fatal):', e.message);
             }
           }
 
@@ -386,15 +386,15 @@ jobs:
           const S_REFRESH     = process.env.STRAVA_REFRESH_TOKEN;
           const DRY_RUN       = process.env.DRY_RUN === 'true';
 
-          // Deliberately independent of the captain's own YOUTUBE_*/single-account
-          // secrets above — a captain who hasn't set up YouTube must still get
+          // Deliberately independent of the operator's own YOUTUBE_*/single-account
+          // secrets above — an operator who hasn't set up YouTube must still get
           // per-user recaps once the three store secrets below are added. Only
           // needs the durable store plus the shared Strava API application
           // credentials (the same STRAVA_CLIENT_ID/SECRET as the step above — one
           // Strava app, many users' tokens). See AGENTS.md/README.md "Strava/YouTube
           // auto-post workflow" for the required secrets.
           if (!UPSTASH_URL || !UPSTASH_TOKEN || !ENC_KEY || !S_ID || !S_SECRET) {
-            console.log('Per-user recap store not configured (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN / TOKEN_ENCRYPTION_KEY / STRAVA_CLIENT_ID / STRAVA_CLIENT_SECRET) — skipping per-user loop; only the captain single-account run above applies.');
+            console.log('Per-user recap store not configured (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN / TOKEN_ENCRYPTION_KEY / STRAVA_CLIENT_ID / STRAVA_CLIENT_SECRET) — skipping per-user loop; only the operator single-account run above applies.');
             process.exit(0);
           }
 
@@ -404,22 +404,22 @@ jobs:
             upstashToken: UPSTASH_TOKEN,
           });
 
-          // Dedupe: if the captain's own account is ALSO linked via the store (e.g.
-          // he links through the app too), skip that store entry so his activity
+          // Dedupe: if the operator's own account is ALSO linked via the store (e.g.
+          // they link through the app too), skip that store entry so their activity
           // isn't processed twice in one run — resolved by Strava athlete id (not
-          // twitch id), since the captain's secret-based credential and his store
+          // twitch id), since the operator's secret-based credential and their store
           // entry are two independent Strava tokens for the same athlete.
           let excludeAthleteId = null;
           if (S_REFRESH) {
             try {
-              const captainClient = createStravaClient();
-              const captainAccessToken = await captainClient.refreshAccessToken({
+              const ownerClient = createStravaClient();
+              const ownerAccessToken = await ownerClient.refreshAccessToken({
                 clientId: S_ID, clientSecret: S_SECRET, refreshToken: S_REFRESH,
               });
-              const athlete = await captainClient.getAuthenticatedAthlete(captainAccessToken);
+              const athlete = await ownerClient.getAuthenticatedAthlete(ownerAccessToken);
               excludeAthleteId = athlete && athlete.id != null ? athlete.id : null;
             } catch (e) {
-              console.log('Could not resolve captain athlete id for dedupe (non-fatal, per-user loop still runs):', e.message);
+              console.log('Could not resolve operator athlete id for dedupe (non-fatal, per-user loop still runs):', e.message);
             }
           }
 

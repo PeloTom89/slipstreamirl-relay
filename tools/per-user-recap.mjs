@@ -1,8 +1,8 @@
 // tools/per-user-recap.mjs — loops the Strava recap flow over every user
-// linked via tools/user-store.js, in addition to the captain's own
+// linked via tools/user-store.js, in addition to the operator's own
 // single-account run in .github/workflows/strava-youtube-comment.yml.
 // Reuses tools/strava-client.mjs, tools/road-matching.mjs, and
-// tools/recap-writer.mjs exactly as the captain's own path does — the only
+// tools/recap-writer.mjs exactly as the operator's own path does — the only
 // new logic here is per-user iteration, LLM-key fallback, an idempotency
 // marker, per-user failure isolation, and folding in each user's own
 // dictated ride summary (POST /ride-summary -> userStore.getRideSummary(),
@@ -10,8 +10,8 @@
 // reused next ride). See AGENTS.md.
 //
 // Deliberately does NOT touch YouTube: per the approved scope decision,
-// YouTube video-linking stays captain-only (still lives only in the
-// workflow's own heredoc). This only writes the Strava activity's
+// YouTube video-linking stays limited to the single-account run (still lives
+// only in the workflow's own heredoc). This only writes the Strava activity's
 // title/description for each linked user, from their own latest activity —
 // there is no YouTube video to gate on, so freshness/idempotency instead
 // rely on RECAP_MARKER below.
@@ -29,8 +29,8 @@ import { buildRecapPrompt, generateRecap } from "./recap-writer.mjs";
 
 // Appended to a written description so a later run (every 30 minutes) can
 // tell this activity already got a per-user recap and skip it, the same
-// role the "already has a youtube.com link" check plays in the captain path
-// — there's no video link to check for here, so this is our own marker.
+// role the "already has a youtube.com link" check plays in the single-account
+// path — there's no video link to check for here, so this is our own marker.
 export const RECAP_MARKER = "— recap via SlipstreamIRL";
 
 // Runs the recap flow for one linked user's latest Strava activity.
@@ -78,7 +78,7 @@ export async function runRecapForUser({
   const ft = Math.round((detail.total_elevation_gain || 0) * 3.28084).toLocaleString("en-US");
 
   // Optional real-road-name matching — same non-fatal fallback as the
-  // captain path: any failure here just leaves roadNames empty.
+  // single-account path: any failure here just leaves roadNames empty.
   let roadNames = [];
   if (mapboxToken) {
     try {
@@ -93,7 +93,7 @@ export async function runRecapForUser({
 
   // The rider's own dictated post-ride summary (POST /ride-summary), if one
   // was recorded since the last recap — same riderNotes handling
-  // recap-writer.mjs already applies for the captain's single-account path,
+  // recap-writer.mjs already applies for the operator's single-account path,
   // just sourced from the per-user store instead of RIDE_SUMMARY_JSON.
   const rideSummary = await userStore.getRideSummary(twitchId);
   const riderNotes = rideSummary && typeof rideSummary.summary === "string" && rideSummary.summary.trim()
@@ -137,7 +137,7 @@ export async function runRecapForUser({
   await stravaClient.updateActivity(accessToken, activity.id, { description: newDescription, name: title });
 
   // Consumed — clear it so a stale note isn't folded into the rider's next
-  // ride, mirroring how the captain's single-account workflow step deletes
+  // ride, mirroring how the operator's single-account workflow step deletes
   // its ride-summary source after a successful write.
   if (riderNotes) {
     try {
@@ -154,7 +154,7 @@ export async function runRecapForUser({
 // listLinkedUsers() returns. Each user is fully isolated: an auth failure
 // unlinks that user and continues; any other failure is logged (naming the
 // twitchId) and continues; neither aborts the loop or affects any other
-// user, including the captain's own single-account run elsewhere in the
+// user, including the operator's own single-account run elsewhere in the
 // workflow.
 export async function runPerUserRecaps({
   userStore,
@@ -181,7 +181,7 @@ export async function runPerUserRecaps({
     const twitchId = user.twitchId;
 
     if (excludeAthleteId != null && user.strava && String(user.strava.athleteId) === String(excludeAthleteId)) {
-      log(`Per-user recap: skipping twitchId=${twitchId} — same Strava athlete id as the captain's own account, already covered by the single-account run.`);
+      log(`Per-user recap: skipping twitchId=${twitchId} — same Strava athlete id as the operator's own account, already covered by the single-account run.`);
       summary.skipped++;
       continue;
     }
