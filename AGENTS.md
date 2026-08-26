@@ -238,6 +238,19 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   activity (use `workflow_dispatch` with `dry_run` to sanity-check without
   writing anything).
 
+- **Discord merge changelog** (`.github/workflows/discord-merge-changelog.yml`,
+  `tools/discord-changelog.mjs`) is a copy of `slipstreamirl-app`'s reference
+  implementation of the same name, with one deliberate format difference: no
+  GitHub link in the embed (`buildDiscordPayload()` omits `embed.url` and the
+  `[Details](...)` line the app-repo version has) — everything else, including
+  the `repoName · by author` footer, is unchanged. Independent of, and does not
+  touch, `strava-youtube-comment.yml` or any relay code — it only reads PR
+  metadata via `gh pr view`/the `pull_request` event and posts to Discord. Uses
+  the same `ANTHROPIC_API_KEY` secret as the Strava recap workflow; needs
+  `DISCORD_WEBHOOK_URL` added separately (inert — logs a skip, exits 0 — until
+  both secrets are present). See README.md "Discord merge changelog" for the
+  full contract.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
