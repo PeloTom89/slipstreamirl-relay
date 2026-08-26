@@ -128,12 +128,36 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   deliberately two independent secrets, so a leaked Upstash token alone can't
   decrypt anything; `createUserStore()` throws at construction if
   `TOKEN_ENCRYPTION_KEY` is missing/malformed rather than falling back to
-  plaintext. **Not wired into `server.js` yet** — this is the storage
-  primitive only; the Strava OAuth flow, key-upload endpoint, and recap
-  changes that will consume it are separate follow-up work. Unlike
-  `stripe-entitlement.js`, this module's whole point IS durable local state —
-  don't conflate the two or apply stripe-entitlement's "zero durable state"
-  rule here.
+  plaintext. Wired into `server.js`'s Strava account linking endpoints (see
+  below) via `putStravaLink`/`getStravaRefreshToken`/`deleteStravaLink`; the
+  per-user Anthropic key it also stores (`putAnthropicKey`/`getAnthropicKey`)
+  and the recap-generation changes that would consume either are still
+  separate follow-up work. Unlike `stripe-entitlement.js`, this module's
+  whole point IS durable local state — don't conflate the two or apply
+  stripe-entitlement's "zero durable state" rule here.
+- **Strava account linking** (`GET /strava-authorize`, `GET /strava-callback`,
+  `POST /strava-deauthorize` in `server.js`; helpers in
+  `tools/strava-oauth.js` and `tools/strava-state-token.js`) is the first
+  per-user piece of making Strava recaps multi-tenant — link → store
+  (encrypted, via `tools/user-store.js`) → unlink, end to end. It does **not**
+  yet change recap generation, which is still hardwired to one account via
+  GitHub Actions secrets (see the workflow entry above) — a separate
+  follow-up wires the recap runner to read from `tools/user-store.js` per
+  user instead. Gated the same way as `/channel-token`: `404` outside
+  `MULTI_TENANT`, `503` if the user store or `STRAVA_CLIENT_ID`/
+  `STRAVA_CLIENT_SECRET` aren't configured. The OAuth `state` param
+  (`tools/strava-state-token.js`) is what stops a Strava account being linked
+  onto the wrong Twitch id — same HS256 `{claim, iat, exp}` shape as
+  `tools/channel-token.js` but a **separate module with a different claim
+  name** (`twitchId` vs `channel`) so a channel push token and Strava link
+  state can never be replayed as each other, even though both are signed with
+  `RELAY_JWT_SECRET`. Unlink is a three-step sequence that must stay in that
+  order: refresh → revoke at Strava (`POST /oauth/deauthorize`) → delete
+  locally; if either of the first two steps fails, the local link is
+  deliberately left intact (`502`) rather than silently forgotten while still
+  live at Strava. See README.md "Strava account linking" for the full
+  contract and setup steps; `tools/relay-strava.test.mjs` covers all of the
+  above end-to-end against stubbed Twitch/Strava/Upstash.
 
 ## Maintaining this file
 

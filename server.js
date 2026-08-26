@@ -64,6 +64,9 @@ const {
   createSubscriptionMetadataWriter,
 } = require("./tools/stripe-entitlement.js");
 const { createRemoteAllowlist } = require("./tools/beta-allowlist-remote.js");
+const { createUserStore } = require("./tools/user-store.js");
+const { buildAuthorizeUrl, exchangeCode, refreshAccessToken, deauthorize } = require("./tools/strava-oauth.js");
+const { signStravaState, verifyStravaState } = require("./tools/strava-state-token.js");
 
 const PORT = process.env.PORT || 8080;
 const TOKEN = process.env.RELAY_TOKEN || "change-me";
@@ -156,6 +159,40 @@ function effectiveAllowlist() {
 // point is testers don't need a Stripe subscription behind them. Identity
 // verification (verifyTwitchUser()) is never bypassed by this flag.
 const BETA_OPEN_ACCESS = /^(1|true|yes)$/i.test(process.env.BETA_OPEN_ACCESS || "");
+
+// Strava account linking (multi-tenant mode only) — see README.md "Strava
+// account linking" and tools/strava-oauth.js / tools/user-store.js. Needs
+// both the per-user store (Upstash + TOKEN_ENCRYPTION_KEY) and a registered
+// Strava API application (STRAVA_CLIENT_ID/SECRET); either piece missing
+// leaves the three endpoints below answering 503 rather than issuing
+// anything or crashing at boot — same "inert until configured" pattern as
+// Stripe entitlement above.
+const STRAVA_CLIENT_ID = process.env.STRAVA_CLIENT_ID || "";
+const STRAVA_CLIENT_SECRET = process.env.STRAVA_CLIENT_SECRET || "";
+// Overridable only for tests (a local stub server) — production always talks
+// to real Strava. Not an operator-facing config option.
+const STRAVA_OAUTH_BASE = process.env.STRAVA_OAUTH_BASE || "https://www.strava.com/oauth";
+let userStore = null;
+if (MULTI_TENANT && process.env.TOKEN_ENCRYPTION_KEY && process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+  try {
+    userStore = createUserStore({});
+  } catch (e) {
+    console.error("user store misconfigured, Strava linking stays disabled:", e.message);
+  }
+}
+
+// Strava requires an exact-match redirect_uri registered in the operator's
+// Strava API application settings (a one-time out-of-band step — see
+// README.md "Strava account linking"). Derived from the request's own Host
+// header rather than a separate env var, so there's nothing new for the
+// operator to keep in sync with their Render URL; only the scheme is
+// guessed (http for a local/test host, https otherwise — Render always
+// terminates TLS in front of this process).
+function stravaRedirectUri(req) {
+  const host = req.headers.host || "";
+  const proto = /^(127\.0\.0\.1|localhost)(:|$)/.test(host) ? "http" : "https";
+  return proto + "://" + host + "/strava-callback";
+}
 
 // Badge lookups use a Twitch app token (client credentials), which requires a
 // CONFIDENTIAL app. The public login app can't have a secret, so this is a
@@ -370,6 +407,75 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Strava OAuth: the app opens this in an auth browser session (identity
+  // proven the same way as /channel-token, verifyTwitchUser() on the caller's
+  // Twitch access token — never a caller-supplied Twitch id), and it 302s to
+  // Strava's own authorize screen carrying a signed `state` that binds the
+  // link attempt to that verified Twitch id. Multi-tenant mode only, and
+  // only once the per-user store and STRAVA_CLIENT_ID/SECRET are configured.
+  // See README.md "Strava account linking".
+  //   GET /strava-authorize?twitchAccessToken=...   -> 302 to Strava
+  if (req.method === "GET" && pathOnly === "/strava-authorize") {
+    if (!MULTI_TENANT) { res.writeHead(404); res.end(); return; }
+    const done = (status, obj) => {
+      res.writeHead(status, { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" });
+      res.end(JSON.stringify(obj));
+    };
+    if (!userStore) return done(503, { error: "user store not configured" });
+    if (!STRAVA_CLIENT_ID || !STRAVA_CLIENT_SECRET) return done(503, { error: "strava not configured" });
+    const url = new URL(req.url, "http://x");
+    const twitchAccessToken = url.searchParams.get("twitchAccessToken");
+    if (!twitchAccessToken) return done(400, { error: "twitchAccessToken required" });
+    verifyTwitchUser(twitchAccessToken).then((twitchId) => {
+      if (!twitchId) return done(401, { error: "could not verify Twitch identity" });
+      const state = signStravaState(twitchId, JWT_SECRET, { ttlSeconds: 600 });
+      const authorizeUrl = buildAuthorizeUrl({
+        clientId: STRAVA_CLIENT_ID,
+        redirectUri: stravaRedirectUri(req),
+        state,
+        oauthBase: STRAVA_OAUTH_BASE,
+      });
+      res.writeHead(302, { Location: authorizeUrl });
+      res.end();
+    }).catch(() => done(401, { error: "could not verify Twitch identity" }));
+    return;
+  }
+
+  // Strava redirects here after the user approves/denies at Strava. Verifies
+  // the signed `state` first (reject missing/invalid/expired — never trust a
+  // Twitch id from anywhere else), exchanges the code server-side for
+  // tokens, stores the refresh token encrypted via the per-user store, then
+  // bounces back into the app via its custom scheme with only a
+  // success/failure signal — the refresh token never reaches the phone. See
+  // README.md "Strava account linking".
+  //   GET /strava-callback?code=...&state=...&scope=...
+  //   -> 302 slipstreamirl://redirect?strava=linked|error
+  if (req.method === "GET" && pathOnly === "/strava-callback") {
+    if (!MULTI_TENANT) { res.writeHead(404); res.end(); return; }
+    const url = new URL(req.url, "http://x");
+    const toApp = (signal) => {
+      res.writeHead(302, { Location: "slipstreamirl://redirect?strava=" + signal });
+      res.end();
+    };
+    const claims = verifyStravaState(url.searchParams.get("state"), JWT_SECRET);
+    if (!claims) return toApp("error");
+    const code = url.searchParams.get("code");
+    if (!code || !userStore || !STRAVA_CLIENT_ID || !STRAVA_CLIENT_SECRET) return toApp("error");
+    // Strava puts the actually-granted scope on this redirect's query string
+    // (not in the token-exchange response) — the user may have unchecked
+    // boxes on the consent screen, so this is the authoritative value.
+    const scope = url.searchParams.get("scope") || "";
+    exchangeCode({ clientId: STRAVA_CLIENT_ID, clientSecret: STRAVA_CLIENT_SECRET, code, oauthBase: STRAVA_OAUTH_BASE })
+      .then((tokens) => userStore.putStravaLink(claims.twitchId, {
+        athleteId: tokens.athlete && tokens.athlete.id,
+        refreshToken: tokens.refresh_token,
+        scope,
+      }))
+      .then(() => toApp("linked"))
+      .catch(() => toApp("error"));
+    return;
+  }
+
   // Health / token check — used by the app's "Test connection" button.
   //   GET /health?token=RELAY_TOKEN  -> 200 "ok" if token matches, else 403.
   //   Multi-tenant mode: GET /health?channel=<id>&token=<channel JWT>.
@@ -492,6 +598,53 @@ const server = http.createServer((req, res) => {
         console.log("channel token issued via beta allowlist (no Stripe subscription):", channelId);
       }
       done(200, { channel: channelId, token: signChannelToken(channelId, JWT_SECRET) });
+    });
+    return;
+  }
+
+  // Revoke a linked Strava account. Identity via verifyTwitchUser(), same as
+  // every other authenticated POST here — never a caller-supplied Twitch id.
+  // Refreshes to get a current Strava access token, calls Strava's own
+  // deauthorize endpoint with it, and only THEN forgets the stored link —
+  // unlink actually revokes at Strava, not just locally. See README.md
+  // "Strava account linking".
+  //   POST /strava-deauthorize   body: {"twitchAccessToken":"..."}
+  if (req.method === "POST" && pathOnly === "/strava-deauthorize") {
+    if (!MULTI_TENANT) { res.writeHead(404); res.end(); return; }
+    const done = (status, obj) => {
+      res.writeHead(status, { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" });
+      res.end(JSON.stringify(obj));
+    };
+    if (!userStore) return done(503, { error: "user store not configured" });
+    if (!STRAVA_CLIENT_ID || !STRAVA_CLIENT_SECRET) return done(503, { error: "strava not configured" });
+    let body = "";
+    req.on("data", (c) => { body += c; if (body.length > 4000) req.destroy(); });
+    req.on("end", async () => {
+      let twitchAccessToken;
+      try { ({ twitchAccessToken } = JSON.parse(body)); } catch { return done(400, { error: "bad json" }); }
+      if (!twitchAccessToken || typeof twitchAccessToken !== "string") {
+        return done(400, { error: "twitchAccessToken required" });
+      }
+      const twitchId = await verifyTwitchUser(twitchAccessToken).catch(() => null);
+      if (!twitchId) return done(401, { error: "could not verify Twitch identity" });
+      const refreshToken = await userStore.getStravaRefreshToken(twitchId).catch(() => null);
+      if (!refreshToken) return done(404, { error: "not linked" });
+      let accessToken;
+      try {
+        const tokens = await refreshAccessToken({
+          clientId: STRAVA_CLIENT_ID, clientSecret: STRAVA_CLIENT_SECRET, refreshToken, oauthBase: STRAVA_OAUTH_BASE,
+        });
+        accessToken = tokens.access_token;
+      } catch {
+        return done(502, { error: "could not refresh strava token" });
+      }
+      try {
+        await deauthorize({ accessToken, oauthBase: STRAVA_OAUTH_BASE });
+      } catch {
+        return done(502, { error: "could not revoke strava access" });
+      }
+      await userStore.deleteStravaLink(twitchId);
+      done(200, { ok: true });
     });
     return;
   }

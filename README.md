@@ -49,6 +49,9 @@ to run this. There's no live hosted service to sign up for.
 | `tools/channel-token.js` | — | signs/verifies the per-channel push JWT used by multi-tenant mode (below) |
 | `tools/mint-channel-token.js` | — | ops CLI: mints a channel's push token (multi-tenant mode) |
 | `tools/stripe-entitlement.js` | — | Stripe webhook verification + entitlement cache/reconciliation (see **Stripe entitlement** below) |
+| `tools/user-store.js` | — | durable per-user store (Strava links, per-user Anthropic keys), Upstash-backed (see **Durable per-user store** below) |
+| `tools/strava-oauth.js` | — | Strava OAuth authorize-URL/token-exchange/refresh/deauthorize helpers (see **Strava account linking** below) |
+| `tools/strava-state-token.js` | — | signs/verifies the `state` param binding a Strava link attempt to the verified Twitch id |
 | `.github/workflows/strava-youtube-comment.yml` | — | scheduled job, see **Strava/YouTube auto-post** below |
 | `render.yaml` | — | Render Blueprint (auto-provisions the service + token) |
 
@@ -57,7 +60,10 @@ Endpoints: `POST /push` (sender), `GET /health` (token check), `GET /badges`
 (Claude ride-plan → title), `POST /ride-summary` (parks a dictated post-ride
 summary for the workflow below), `POST /channel-token` (entitlement-gated
 channel push token issuance, multi-tenant mode), `POST /stripe-webhook`
-(Stripe entitlement events, multi-tenant mode), WebSocket `?role=overlay|sender`.
+(Stripe entitlement events, multi-tenant mode), `GET /strava-authorize` /
+`GET /strava-callback` / `POST /strava-deauthorize` (per-user Strava account
+linking, multi-tenant mode — see **Strava account linking** below), WebSocket
+`?role=overlay|sender`.
 
 ## Overlay features
 
@@ -397,14 +403,13 @@ shouldn't need a subscription or a hand-added id.
 - `BETA_OPEN_ACCESS` *(optional)* — see **Beta allowlist** above. Does not
   require `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` to be set.
 
-## Durable per-user store (not yet wired in)
+## Durable per-user store
 
 `tools/user-store.js` is a durable per-user store — Strava links and
 per-user Anthropic keys, keyed on Twitch user id — backed by Upstash Redis's
 free-tier REST API, with secrets encrypted application-side (AES-256-GCM)
-before they ever reach Upstash. **It's unused by the running relay today**;
-a later change wires it into `POST /channel-token` and the upcoming Strava
-OAuth flow. Setting these now is safe but has no effect yet:
+before they ever reach Upstash. It's wired into **Strava account linking**
+below; a later change wires per-user Anthropic keys into the recap workflow.
 
 - `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` — from your Upstash
   Redis database's REST API credentials.
@@ -412,3 +417,65 @@ OAuth flow. Setting these now is safe but has no effect yet:
   secrets before they're stored. Keep this **independent** from the Upstash
   token — a leaked Upstash credential alone must not be enough to decrypt
   anything stored there. Never commit it.
+
+All three of the above must be set for the store to be active; any one
+missing leaves it `null` and the Strava linking endpoints below answer `503`
+rather than issuing anything or crashing at boot.
+
+## Strava account linking
+
+Lets a signed-in user connect **their own** Strava account from the app —
+the first per-user piece of making Strava recaps multi-tenant (the recap
+workflow above still runs against one hardwired account via GitHub Actions
+secrets; a later change makes it read from this store instead). Multi-tenant
+mode only (`MULTI_TENANT=1`), and only once both the **durable per-user
+store** above and `STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` below are set —
+either piece missing leaves the three endpoints below answering `503`.
+
+**Flow** (authorization-code OAuth, distinct from the app's Twitch *implicit*
+flow — Strava's code is server-visible and must be exchanged server-side; the
+refresh token never reaches the phone):
+
+1. **`GET /strava-authorize?twitchAccessToken=...`** — the app opens this in
+   an auth browser session (`WebBrowser.openAuthSessionAsync`, same pattern as
+   the app's Twitch sign-in). The relay verifies the Twitch access token
+   (`verifyTwitchUser()` — the same identity check `POST /channel-token`
+   uses), mints a short-lived signed `state` binding the attempt to that
+   Twitch id (`tools/strava-state-token.js` — same HS256 shape as the
+   multi-tenant push JWT, signed with `RELAY_JWT_SECRET`, distinct claim so
+   the two token kinds can't be swapped for each other), and `302`s to
+   Strava's own authorize screen with scope `activity:read_all,activity:write`
+   (`read_all` so recaps can see "Only You" activities; `write` so a later
+   recap run can update the activity's title/description, same as the
+   existing workflow does today).
+2. **`GET /strava-callback?code=...&state=...&scope=...`** — Strava redirects
+   here after the user approves/denies. The relay verifies `state` (rejecting
+   missing/invalid/expired — it never trusts a Twitch id from anywhere else),
+   exchanges `code` for tokens directly with Strava, and stores the refresh
+   token via `putStravaLink()` (encrypted, see above). It then `302`s back
+   into the app via its custom scheme with **only a success/failure signal**
+   — `slipstreamirl://redirect?strava=linked` or `?strava=error` — mirroring
+   how `/app-redirect` bounces Twitch sign-in back to the app. The
+   `redirect_uri` sent to Strava is derived from the request's own `Host`
+   header (`https://<this-host>/strava-callback`), so there's nothing extra
+   to configure here beyond registering that same URL with Strava (below).
+3. **`POST /strava-deauthorize`** *(body: `{"twitchAccessToken":"..."}"`)* —
+   disconnects. Verifies identity the same way, refreshes to get a current
+   Strava access token, calls Strava's own `/oauth/deauthorize` with it, and
+   only **then** deletes the local link — unlinking actually revokes access
+   at Strava, not just forgets it locally. If the refresh or the revoke call
+   fails, the local link is deliberately left intact (`502`) rather than
+   silently forgotten while still live at Strava.
+
+**Setup (one-time, out-of-band):** register a Strava API application at
+<https://www.strava.com/settings/api>, and add
+`https://<your-relay-url>/strava-callback` as its **Authorization Callback
+Domain**/redirect. Set `STRAVA_CLIENT_ID` and `STRAVA_CLIENT_SECRET` (Render
+env vars — separate from the same-named GitHub Actions secrets the
+Strava/YouTube workflow above uses, even though they're typically the same
+Strava API application) on the relay. The feature is inert (`503`) until
+these are set, the redirect is registered, and the durable per-user store
+above is configured.
+
+- `STRAVA_CLIENT_ID` — your Strava API application's Client ID.
+- `STRAVA_CLIENT_SECRET` — its Client Secret. Never commit it.
