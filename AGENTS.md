@@ -6,12 +6,24 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Tests: `npm test` runs Node's built-in test runner (`node --test tools/*.test.mjs`) —
   no external test framework is installed. Put unit-testable logic under `tools/*.mjs`
   with a matching `tools/*.test.mjs`.
-- `.github/workflows/strava-youtube-comment.yml` has no companion `.js`/`.mjs` file —
-  its logic is a `node --input-type=module <<'EOF' ... EOF` heredoc inline in the YAML
-  `run:` step. GitHub Actions `run:` steps execute with cwd = the checked-out repo root,
-  so that heredoc can `import` a normal repo-relative path (e.g. `./tools/road-names.mjs`)
-  and does — this is how testable logic gets shared with that workflow without duplicating
-  it inline.
+- `.github/workflows/strava-youtube-comment.yml`'s `run:` step is still a
+  `node --input-type=module <<'EOF' ... EOF` heredoc, but it is now thin
+  glue: read env/inputs, call extracted functions in order, done. The actual
+  recap logic lives in `tools/strava-client.mjs` (token refresh, activity
+  lookup/detail, segment-popularity ranking, description/title write-back),
+  `tools/road-matching.mjs` (GPS-trace-to-road-name matching via Mapbox,
+  consolidated with the aggregation in `tools/road-names.mjs`),
+  `tools/recap-writer.mjs` (prompt building + the Claude call), and
+  `tools/youtube-client.mjs` (latest-upload lookup, OAuth refresh, YouTube
+  description mirroring) — each with a `tools/*.test.mjs` under the `npm
+  test` glob. GitHub Actions `run:` steps execute with cwd = the checked-out
+  repo root, so the heredoc `import`s these as normal repo-relative paths
+  (e.g. `./tools/road-names.mjs`, the original precedent for this pattern)
+  with no build step. This split was done specifically so the recap logic
+  is callable/testable outside the heredoc — groundwork for a future
+  per-user change that loops it over many users' stored credentials (not
+  yet done: today it's still hardwired to one Strava account via repo
+  secrets).
 - `server.js` supports an opt-in multi-tenant mode (`MULTI_TENANT=1` +
   `RELAY_JWT_SECRET`) — see README.md "Multi-tenant mode" for the contract and
   ROADMAP.md "Big bet" for what's still open. Default (mode off) behaviour is
@@ -96,7 +108,13 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   `tools/user-store.test.mjs` can exercise their respective endpoints
   end-to-end without live Twitch, Stripe, or Upstash credentials. Don't
   document these in README.md's operator-facing env var tables — they're not
-  something the operator ever needs to set.
+  something the operator ever needs to set. The recap modules
+  (`tools/strava-client.mjs`, `tools/road-matching.mjs`,
+  `tools/recap-writer.mjs`, `tools/youtube-client.mjs`) follow the same seam
+  pattern but as factory-function options (`apiBase`/`oauthBase`/`fetchImpl`,
+  defaulting to the real hosts) rather than env vars, since they're plain
+  importable modules, not `server.js` — same "don't document in README" rule
+  applies.
 - `tools/user-store.js` is the relay's only durable per-user store (keyed on
   the Twitch user id, the same identity `verifyTwitchUser()`/`POST
   /channel-token` already use — no separate id) — one JSON blob per Redis key
