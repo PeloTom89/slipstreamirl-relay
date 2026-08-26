@@ -1,0 +1,118 @@
+name: Post merge changelog to Discord
+
+# Reference implementation: slipstreamirl-app's own
+# discord-merge-changelog.yml + tools/discord-changelog.mjs, copied here with
+# one deliberate format difference — no GitHub link in the Discord embed (no
+# embed.url, no appended "[Details](...)" line). See README.md "Discord merge
+# changelog" and AGENTS.md for the contract.
+#
+# Fires on every merged PR into main, turns the PR title/description into a
+# friendly, jargon-free explanation via Claude, and posts it to the
+# SlipstreamIRL community Discord as an embed. Also supports a manual
+# workflow_dispatch with a pr_number, so an existing merged PR can be
+# re-posted as a test without waiting for a new merge.
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Merged PR number to post a (test) changelog entry for"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: discord-changelog-${{ github.event.pull_request.number || github.event.inputs.pr_number || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  post-changelog:
+    # Closed-but-not-merged PRs must never post; workflow_dispatch always
+    # runs (it re-validates the target PR is actually merged inside the
+    # "Resolve PR data" step below, since the event itself carries no merge
+    # state for an arbitrary pr_number).
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Resolve PR data
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          REPO: ${{ github.repository }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ -z "$INPUT_PR_NUMBER" ]; then
+              echo "::error::workflow_dispatch requires a pr_number input (the number of an already-merged PR to test)."
+              exit 1
+            fi
+            PR_JSON=$(gh pr view "$INPUT_PR_NUMBER" --repo "$REPO" --json number,title,body,url,author,mergedAt)
+            MERGED_AT=$(echo "$PR_JSON" | jq -r '.mergedAt')
+            if [ "$MERGED_AT" = "null" ]; then
+              echo "::error::PR #$INPUT_PR_NUMBER has not been merged — refusing to post a merge changelog for it."
+              exit 1
+            fi
+            NUMBER=$(echo "$PR_JSON" | jq -r '.number')
+            TITLE=$(echo "$PR_JSON" | jq -r '.title')
+            BODY=$(echo "$PR_JSON" | jq -r '.body // ""')
+            URL=$(echo "$PR_JSON" | jq -r '.url')
+            AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login')
+          else
+            NUMBER=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
+            TITLE=$(jq -r '.pull_request.title' "$GITHUB_EVENT_PATH")
+            BODY=$(jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH")
+            URL=$(jq -r '.pull_request.html_url' "$GITHUB_EVENT_PATH")
+            AUTHOR=$(jq -r '.pull_request.user.login' "$GITHUB_EVENT_PATH")
+          fi
+
+          echo "number=$NUMBER" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "author=$AUTHOR" >> "$GITHUB_OUTPUT"
+
+          # Multiline-safe outputs (title/body can contain newlines).
+          {
+            echo "title<<DISCORD_CHANGELOG_TITLE_EOF"
+            echo "$TITLE"
+            echo "DISCORD_CHANGELOG_TITLE_EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "body<<DISCORD_CHANGELOG_BODY_EOF"
+            echo "$BODY"
+            echo "DISCORD_CHANGELOG_BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Skip bot-authored merges
+        id: botcheck
+        run: |
+          case "${{ steps.pr.outputs.author }}" in
+            *"[bot]") echo "skip=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "skip=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Generate summary and post to Discord
+        if: steps.botcheck.outputs.skip != 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          PR_BODY: ${{ steps.pr.outputs.body }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          PR_AUTHOR: ${{ steps.pr.outputs.author }}
+          REPO_NAME: ${{ github.repository }}
+        run: node tools/discord-changelog.mjs

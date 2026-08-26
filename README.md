@@ -322,6 +322,46 @@ the same values set on the relay for the **durable per-user store** below. Until
 these three are added to the repo's secrets, this step logs a skip and exits
 cleanly — only the captain's single-account run applies.
 
+## Discord merge changelog
+
+`.github/workflows/discord-merge-changelog.yml` posts a friendly, plain-English
+"here's what just shipped" note to the SlipstreamIRL community Discord every
+time a PR is merged into `main`. It's written for riders/streamers, not
+developers — no engineering jargon, and honest ("behind-the-scenes
+improvements") rather than invented user impact when a merge is purely
+internal. Runs on `pull_request` (`types: [closed]`, gated on
+`merged == true`) and also supports `workflow_dispatch` with an optional
+`pr_number` input, so an already-merged PR can be re-posted as a test without
+waiting for a new merge.
+
+The pure request/payload logic (Claude call via forced tool-use for a clean
+`{ headline, explanation }`, the Discord embed shape, the plain-title
+fallback) lives in [`tools/discord-changelog.mjs`](tools/discord-changelog.mjs),
+invoked directly by `node` from the workflow. This is a copy of the
+**reference implementation** in `slipstreamirl-app`
+(`.github/workflows/discord-merge-changelog.yml` +
+`tools/discord-changelog.mjs`), with one deliberate format difference: **the
+Discord embed here has no GitHub link** — no `embed.url`, no appended
+`[Details](...)` line in the description. The footer is unchanged from the
+reference (`repoName · by author`, e.g. "PeloTom89/slipstreamirl-relay · by
+someuser") — see `buildDiscordPayload()` in `tools/discord-changelog.mjs` for
+where that's implemented.
+
+Requires two repo secrets (Settings ▸ Secrets and variables ▸ Actions):
+- `DISCORD_WEBHOOK_URL` — the target channel's webhook. Not yet set on this
+  repo; the workflow is inert until it is added.
+- `ANTHROPIC_API_KEY` — already configured for the Strava/YouTube recap
+  workflow above; this workflow reuses the same secret to generate the
+  summary.
+
+Missing either secret makes the workflow log "not configured — skipping" and
+exit 0 — it's inert (no red X on every merge) until both are added. A merge
+authored by a bot account (login ending `[bot]`, e.g. `dependabot[bot]`) is
+skipped without calling Claude or Discord. If the Claude call errors or
+returns something unusable, the workflow falls back to a minimal factual post
+built from the PR title rather than posting nothing or posting broken/error
+text.
+
 ## Stripe entitlement
 
 This is an optional, opt-in layer on top of multi-tenant mode: it lets a
