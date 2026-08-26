@@ -72,6 +72,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   exists (i.e. Stripe is otherwise configured). See README.md "Beta
   allowlist" for the full contract; the operator must clear it before charging
   real customers.
+- `BETA_OPEN_ACCESS` (server.js) drops the payment/allowlist check entirely
+  for everyone during a beta — any identity-verified Twitch caller is
+  entitled. Unlike `BETA_ALLOWLIST_TWITCH_IDS`, it deliberately does NOT
+  require `entitlementStore`/Stripe to be configured (checked before the 503
+  "entitlement not configured" branch, not after), since the whole point is
+  testers don't need a Stripe subscription behind them. Identity verification
+  is still never skipped. See README.md "Beta allowlist" for the full
+  contract; clear it before charging real customers, same as the allowlist.
 - `tools/beta-allowlist-remote.js` (`BETA_ALLOWLIST_REMOTE_URL`) is the
   optional remote source merged into that same allowlist, so the operator can
   add a tester without an env var change (a redeploy drops connections and

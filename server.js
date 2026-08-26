@@ -34,6 +34,16 @@
 //                replaces it. See README.md "Beta allowlist".
 //   BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS  optional, default 300 (5 min) —
 //                how often the URL above is re-polled.
+//   BETA_OPEN_ACCESS  optional, multi-tenant only; when set, ANY
+//                identity-verified Twitch caller is entitled — no Stripe
+//                subscription or allowlist membership required. Identity
+//                verification itself is never skipped: verifyTwitchUser()
+//                still has to resolve a real access token to a real Twitch
+//                id. Meant for a public beta where testers shouldn't need a
+//                Stripe subscription at all; unlike the allowlist, does NOT
+//                require entitlementStore/Stripe to be configured. This is a
+//                wide-open gate — clear it before charging real customers.
+//                See README.md "Beta allowlist".
 //
 // Multi-tenant mode (MULTI_TENANT=1): the relay hosts many streamers' rooms
 // instead of one. State, rooms, and push auth all become per-channel, keyed by
@@ -138,6 +148,14 @@ function effectiveAllowlist() {
   if (!remoteAllowlist) return BETA_ALLOWLIST_TWITCH_IDS;
   return new Set([...BETA_ALLOWLIST_TWITCH_IDS, ...remoteAllowlist.getIds()]);
 }
+
+// Beta open access (see env var comment above): during the public beta the
+// captain wants EVERY identity-verified Twitch sign-in entitled, not just an
+// allowlisted few — this is the "drop the manual step" switch. Deliberately
+// independent of entitlementStore/Stripe being configured at all: the whole
+// point is testers don't need a Stripe subscription behind them. Identity
+// verification (verifyTwitchUser()) is never bypassed by this flag.
+const BETA_OPEN_ACCESS = /^(1|true|yes)$/i.test(process.env.BETA_OPEN_ACCESS || "");
 
 // Badge lookups use a Twitch app token (client credentials), which requires a
 // CONFIDENTIAL app. The public login app can't have a secret, so this is a
@@ -430,7 +448,11 @@ const server = http.createServer((req, res) => {
   //      503 entitlement not configured (fall back to tools/mint-channel-token.js)
   if (req.method === "POST" && pathOnly === "/channel-token") {
     if (!MULTI_TENANT) { res.writeHead(404); res.end(); return; }
-    if (!entitlementStore) {
+    // Beta open access works on identity alone — it deliberately does not
+    // require entitlementStore/Stripe to be configured, since the whole
+    // point is testers don't need a Stripe subscription. Without it, Stripe
+    // config remains required to reach the endpoint at all (unchanged).
+    if (!entitlementStore && !BETA_OPEN_ACCESS) {
       res.writeHead(503, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "entitlement not configured" }));
       return;
@@ -449,6 +471,10 @@ const server = http.createServer((req, res) => {
       }
       const channelId = await verifyTwitchUser(twitchAccessToken).catch(() => null);
       if (!channelId) return done(401, { error: "could not verify Twitch identity" });
+      if (BETA_OPEN_ACCESS) {
+        console.log("channel token issued via beta open access (no Stripe subscription, no allowlist):", channelId);
+        return done(200, { channel: channelId, token: signChannelToken(channelId, JWT_SECRET) });
+      }
       let entitled;
       try { entitled = await entitlementStore.isEntitled(channelId); }
       catch { return done(503, { error: "entitlement check unavailable" }); }
@@ -652,6 +678,7 @@ const server = http.createServer((req, res) => {
   if (MULTI_TENANT) {
     const allowlist = effectiveAllowlist();
     const notes = [];
+    if (BETA_OPEN_ACCESS) notes.push("beta open access ON");
     if (allowlist.size) notes.push(allowlist.size + " beta allowlisted");
     if (remoteAllowlist) notes.push("remote " + remoteAllowlist.status().state);
     const suffix = notes.length ? ", " + notes.join(", ") : "";

@@ -365,6 +365,22 @@ max response size), and only entries that look like real Twitch numeric ids
 are accepted. The root status line shows whether the remote source is
 `ok`/`stale`/`never-fetched`.
 
+**`BETA_OPEN_ACCESS`** goes further than the allowlist: while set, *any*
+Twitch account that can be identity-verified is entitled — no allowlisting,
+no Stripe subscription, and (unlike the allowlist above) no Stripe
+configuration at all is required. This is for a public beta where testers
+shouldn't need a subscription or a hand-added id.
+
+- Identity is never weakened: the caller still has to present a Twitch
+  access token that `verifyTwitchUser()` resolves to a real Twitch id.
+- Every token issued this way logs a line naming the Twitch id
+  ("issued via beta open access"), and the root status page shows **"beta
+  open access ON"** whenever the flag is set, so it's always obvious at a
+  glance whether the relay is charging or wide open.
+- **Clear this env var before charging real customers** — it has no expiry
+  and overrides the Stripe/allowlist check entirely for everyone, not just a
+  listed few.
+
 ### Env vars
 
 - `STRIPE_SECRET_KEY` — Stripe secret API key. Used mostly for read calls,
@@ -378,3 +394,5 @@ are accepted. The root status line shows whether the remote source is
 - `BETA_ALLOWLIST_REMOTE_URL` *(optional)* — see **Beta allowlist** above.
 - `BETA_ALLOWLIST_REMOTE_REFRESH_SECONDS` *(optional, default `300` = 5
   min)* — how often the URL above is re-polled.
+- `BETA_OPEN_ACCESS` *(optional)* — see **Beta allowlist** above. Does not
+  require `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` to be set.
