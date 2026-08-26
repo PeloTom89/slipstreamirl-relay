@@ -78,7 +78,13 @@ jobs:
         run: |
           node --input-type=module <<'EOF'
           import fs from 'node:fs';
-          import { aggregateRoadNames, topRoadNamesInRideOrder } from './tools/road-names.mjs';
+          import { createStravaClient } from './tools/strava-client.mjs';
+          import { matchRoadNames } from './tools/road-matching.mjs';
+          import { buildRecapPrompt, generateRecap } from './tools/recap-writer.mjs';
+          import { createYoutubeClient } from './tools/youtube-client.mjs';
+
+          const strava = createStravaClient();
+          const youtube = createYoutubeClient();
 
           const YT_KEY     = process.env.YOUTUBE_API_KEY;
           const YT_CHANNEL = process.env.YOUTUBE_CHANNEL_ID;
@@ -112,36 +118,27 @@ jobs:
           }
 
           // 1. Refresh Strava access token
-          const tokenRes = await fetch('https://www.strava.com/oauth/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              client_id: S_ID,
-              client_secret: S_SECRET,
-              refresh_token: S_REFRESH,
-              grant_type: 'refresh_token',
-            }),
-          });
-          const tokenData = await tokenRes.json();
-          if (!tokenData.access_token) {
-            console.error('Strava token refresh failed:', JSON.stringify(tokenData));
+          let access_token;
+          try {
+            access_token = await strava.refreshAccessToken({
+              clientId: S_ID, clientSecret: S_SECRET, refreshToken: S_REFRESH,
+            });
+          } catch (e) {
+            console.error(e.message);
             process.exit(1);
           }
-          const access_token = tokenData.access_token;
 
           // Diagnostic mode: list recent activities and exit, before the YouTube
           // check (which would otherwise skip the whole run if nothing's been
           // uploaded in the last 24h) — this doesn't need a video at all.
           if (process.env.LIST_RECENT === 'true') {
-            const listRes = await fetch(
-              'https://www.strava.com/api/v3/athlete/activities?per_page=10',
-              { headers: { Authorization: `Bearer ${access_token}` } }
-            );
-            if (!listRes.ok) {
-              console.error(`Strava activities fetch failed (${listRes.status}):`, await listRes.text());
+            let recent;
+            try {
+              recent = await strava.listRecentActivities(access_token, 10);
+            } catch (e) {
+              console.error(e.message);
               process.exit(1);
             }
-            const recent = await listRes.json();
             console.log('===== 10 most recent activities =====');
             for (const a of recent || []) {
               const dist = (a.distance / 1609.344).toFixed(1);
@@ -152,45 +149,31 @@ jobs:
 
           // 2. Fetch latest YouTube video uploaded in the last 24 hours
           const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-          const ytRes = await fetch(
-            `https://www.googleapis.com/youtube/v3/search?part=snippet` +
-            `&channelId=${encodeURIComponent(YT_CHANNEL)}` +
-            `&type=video&order=date&maxResults=1` +
-            `&publishedAfter=${encodeURIComponent(since)}` +
-            `&key=${encodeURIComponent(YT_KEY)}`
-          );
-          const ytData = await ytRes.json();
-          if (ytData.error) {
-            console.error('YouTube API error:', JSON.stringify(ytData.error));
+          let video;
+          try {
+            video = await youtube.findRecentVideo({ apiKey: YT_KEY, channelId: YT_CHANNEL, sinceIso: since });
+          } catch (e) {
+            console.error(e.message);
             process.exit(1);
           }
-          const video = (ytData.items || [])[0];
           if (!video) {
             console.log('No YouTube video uploaded in the last 24 hours — skipping.');
             process.exit(0);
           }
-          const videoId = video.id.videoId;
+          const videoId = video.videoId;
           const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-          const videoPublished = new Date(video.snippet.publishedAt).getTime();
-          const decodeEntities = (s) => s
-            .replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
-            .replace(/&lt;/g, '<').replace(/&gt;/g, '>');
-          const videoTitle = decodeEntities(video.snippet.title || '').trim();
+          const videoPublished = new Date(video.publishedAt).getTime();
+          const videoTitle = video.title;
 
           // 3. Fetch the target Strava activity — a specific one if overridden
           //    (manual re-apply), otherwise whatever's currently latest.
-          const actRes = await fetch(
-            ACTIVITY_ID_OVERRIDE
-              ? `https://www.strava.com/api/v3/activities/${ACTIVITY_ID_OVERRIDE}`
-              : 'https://www.strava.com/api/v3/athlete/activities?per_page=1',
-            { headers: { Authorization: `Bearer ${access_token}` } }
-          );
-          if (!actRes.ok) {
-            console.error(`Strava activities fetch failed (${actRes.status}):`, await actRes.text());
+          let activity;
+          try {
+            activity = await strava.getTargetActivity(access_token, ACTIVITY_ID_OVERRIDE);
+          } catch (e) {
+            console.error(e.message);
             process.exit(1);
           }
-          const actBody = await actRes.json();
-          const activity = ACTIVITY_ID_OVERRIDE ? actBody : (actBody || [])[0];
           if (!activity) {
             console.log('No Strava activity found — skipping.');
             process.exit(0);
@@ -209,15 +192,13 @@ jobs:
           }
 
           // 5. Fetch the full activity (description, stats, segment names)
-          const detRes = await fetch(
-            `https://www.strava.com/api/v3/activities/${activity.id}`,
-            { headers: { Authorization: `Bearer ${access_token}` } }
-          );
-          if (!detRes.ok) {
-            console.error(`Strava activity fetch failed (${detRes.status}):`, await detRes.text());
+          let detail;
+          try {
+            detail = await strava.getActivityDetail(access_token, activity.id);
+          } catch (e) {
+            console.error(e.message);
             process.exit(1);
           }
-          const detail = await detRes.json();
           const description = detail.description || '';
           if (!DRY_RUN && !MANUAL_APPLY && description.includes('youtube.com')) {
             console.log('YouTube link already in activity description — skipping.');
@@ -252,72 +233,15 @@ jobs:
           let roadNames = [];
           if (MAPBOX_TOKEN) {
             try {
-              const streamRes = await fetch(
-                `https://www.strava.com/api/v3/activities/${activity.id}/streams?keys=latlng&key_by_type=true`,
-                { headers: { Authorization: `Bearer ${access_token}` } }
-              );
-              if (streamRes.ok) {
-                const streamData = await streamRes.json();
-                const points = (streamData.latlng && streamData.latlng.data) || []; // [[lat,lng], ...]
-                if (points.length >= 2) {
-                  // Downsample: keep a point only once it's >=25m from the last kept
-                  // point (same decimation distance the relay's own breadcrumb trail
-                  // uses) — thousands of raw GPS points is far more than needed to
-                  // trace the route shape, and Mapbox caps requests at 100 points.
-                  const MIN_GAP_M = 25;
-                  const haversineM = (a, b) => {
-                    const R = 6371000, dLat = (b[0] - a[0]) * Math.PI / 180, dLng = (b[1] - a[1]) * Math.PI / 180;
-                    const lat = (a[0] + b[0]) / 2 * Math.PI / 180, x = dLng * Math.cos(lat);
-                    return Math.sqrt(dLat * dLat + x * x) * R;
-                  };
-                  const thinned = [points[0]];
-                  for (let i = 1; i < points.length; i++) {
-                    if (haversineM(thinned[thinned.length - 1], points[i]) >= MIN_GAP_M) thinned.push(points[i]);
-                  }
-                  const last = points[points.length - 1];
-                  if (thinned[thinned.length - 1] !== last) thinned.push(last);
-
-                  // Chunk into Mapbox's 100-coordinate-per-request limit.
-                  const CHUNK = 100;
-                  const chunks = [];
-                  for (let i = 0; i < thinned.length; i += CHUNK) chunks.push(thinned.slice(i, i + CHUNK));
-
-                  const roadSteps = []; // { name, distance } per matched step, in ride order (chunks are processed sequentially)
-                  for (const chunk of chunks) {
-                    if (chunk.length < 2) continue;
-                    const coordStr = chunk.map(([lat, lng]) => `${lng},${lat}`).join(';');
-                    // A generous 25m match radius per point — real GPS traces (especially
-                    // under tree cover / in canyons) wander more than Mapbox's tight
-                    // default, and a rejected match is worse than a slightly loose one.
-                    const radiusStr = chunk.map(() => '25').join(';');
-                    const url = `https://api.mapbox.com/matching/v5/mapbox/cycling/${coordStr}` +
-                      `?access_token=${encodeURIComponent(MAPBOX_TOKEN)}&steps=true&geometries=geojson` +
-                      `&overview=false&radiuses=${radiusStr}`;
-                    const mbRes = await fetch(url);
-                    if (!mbRes.ok) continue; // skip this chunk, never fail the run over it
-                    const mbData = await mbRes.json();
-                    const matching = (mbData.matchings || [])[0];
-                    if (!matching) continue;
-                    for (const leg of matching.legs || []) {
-                      for (const step of leg.steps || []) {
-                        const name = (step.name || '').trim();
-                        if (!name) continue;
-                        roadSteps.push({ name, distance: step.distance || 0 });
-                      }
-                    }
-                  }
-                  // Group steps into roads (merging spelling variants of the same
-                  // road, e.g. a trailing "(WY 390)" highway suffix, and summing
-                  // their distance — see tools/road-names.mjs), then select the top
-                  // 8 by distance covered (so a minor service road doesn't crowd out
-                  // the ones that actually defined the ride), output in the order
-                  // actually ridden -- NOT sorted by distance -- so the write-up
-                  // doesn't misrepresent which road came first (a road ridden last
-                  // but for the longest stretch would otherwise sort to the top).
-                  const roadGroups = aggregateRoadNames(roadSteps);
-                  roadNames = topRoadNamesInRideOrder(roadGroups, 8);
-                }
-              }
+              const points = await strava.getActivityLatLngStream(access_token, activity.id); // [[lat,lng], ...]
+              // Road matching (downsample/chunk/Mapbox call/aggregate — see
+              // tools/road-matching.mjs) selects the top 8 roads by distance covered
+              // (so a minor service road doesn't crowd out the ones that actually
+              // defined the ride), output in the order actually ridden -- NOT sorted
+              // by distance -- so the write-up doesn't misrepresent which road came
+              // first (a road ridden last but for the longest stretch would
+              // otherwise sort to the top).
+              roadNames = await matchRoadNames(points, { mapboxToken: MAPBOX_TOKEN });
               console.log(`Road matching: ${roadNames.length ? roadNames.join('; ') : '(no named roads matched)'}`);
             } catch (e) {
               console.log('Road-name map matching failed (non-fatal, falling back to segments only):', e.message);
@@ -332,115 +256,15 @@ jobs:
           let hook = MANUAL_APPLY ? OPENER_OVERRIDE : videoTitle;
           if (!MANUAL_APPLY && CLAUDE_KEY) {
             try {
-              // Rank segments by Strava's own athlete_count (unique riders who've ever
-              // done it) rather than just ride order — the well-known, widely-ridden
-              // segments surface first instead of one-off/junk auto-generated ones.
-              // Dedupe by segment id (not name) first, capped to bound API calls.
-              const segmentIdPairs = [...new Map(
-                (detail.segment_efforts || [])
-                  .filter(e => e.segment && e.segment.id)
-                  .map(e => [e.segment.id, e.segment_name || e.segment.name])
-              ).entries()].slice(0, 15);
-              const segmentPopularity = await Promise.all(segmentIdPairs.map(async ([id, name]) => {
-                try {
-                  const segRes = await fetch(`https://www.strava.com/api/v3/segments/${id}`, {
-                    headers: { Authorization: `Bearer ${access_token}` },
-                  });
-                  if (!segRes.ok) return { name, athleteCount: 0 };
-                  const segDetail = await segRes.json();
-                  return { name, athleteCount: segDetail.athlete_count || 0 };
-                } catch {
-                  return { name, athleteCount: 0 };
-                }
-              }));
-              const segments = segmentPopularity
-                .sort((a, b) => b.athleteCount - a.athleteCount)
-                .slice(0, 6)
-                .map(s => s.name)
-                .filter(Boolean);
-              const promptLines = [
-                'Write a title and an opening line for a Strava cycling activity.',
-                '',
-                'Style rules (apply to both):',
-                '- Plain and factual. State what the route was — roads, terrain, landmarks — the way you\'d describe it to a friend, not narrate a feeling.',
-                '- Never invent a specific fact that isn\'t actually present in the data below or the rider\'s own notes — a destination, a method of travel, a name, a plan, a reason. If the rider\'s notes are vague on something ("headed home tomorrow"), stay equally vague rather than filling in a specific-sounding detail. A plausible guess that happens to be wrong is worse than a vaguer sentence that\'s true.',
-                '- The segment list below is Strava-defined ride efforts, ranked by rider popularity — NOT a list of road names. Only state one as the name of a road if it plausibly reads like one (e.g. "Moose-Wilson Rd"). Otherwise treat it as a landmark/feature reference, or leave it out rather than implying it was the road surface you rode on.',
-                '- The "Roads ridden" list, if present, IS real road names (matched from GPS) — these you can state directly and confidently as the roads you were on, listed in the actual order they were ridden. Never reorder them or imply a different sequence than given.',
-                '- The road list is just an ORDER, not a shape — you don\'t know if the ride was a loop, an out-and-back, or point-to-point, only which road came after which. Never describe a route shape ("looped back on X", "circled around", "returned via X", "back down Y") — that asserts a geometric relationship between roads that isn\'t in the data. Just state the roads in the order given (e.g. "rode X, then Y, then Z") without claiming how they relate to each other spatially.',
-                '- You do NOT need to mention every road in the list. If the rider left notes, THEIR words and what they actually cared about are the priority — pick one or two roads that anchor the ride, don\'t spend the whole opener enumerating all of them at the expense of the rider\'s own voice.',
-                '- Never mention PRs, achievements, speed, or performance — no bragging.',
-                '- No calls to action, no hashtags, no emoji, no quotation marks.',
-                '- If the opener is two sentences, each sentence must add NEW information — a different place, feature, or detail. Never restate or rephrase the same landmark, road segment, or feature in both sentences.',
-                '- BANNED: metaphor, personification (light/gravel/road "doing" something), rhetorical questions, invented internal feelings or unexplainable moments ("something I couldn\'t explain"), any line that sounds like the opening of a blog post or travel essay.',
-                '- The opener should quietly make the reader curious enough to watch the ride video linked below it, without ever asking them to, and without overselling it.',
-                '',
-                'Title: a short activity title (roughly 3-7 words). Good example: "Morning Miles Under the Tetons".',
-                'Opener: one or two short sentences for the top of the activity description. Good example (plain, factual, no metaphor, each clause adds something new): "Morning spin up Moose–Wilson Road and through the park to Jenny Lake — quiet roads, two stretches of gravel, and the Tetons out in full the whole way."',
-                'Bad example 1 (too flowery — do not write like this): "The gravel stretch north of the fee station has a way of pulling your eyes off the road and toward the ridgeline. Somewhere between Jenny Lake and the Moose entrance the morning light did something I couldn\'t quite explain."',
-                'Bad example 2 (repeats the same detail across both sentences — do not write like this): "Rode Moose-Wilson Road north from the fee station, including the gravel section, then up to Jenny Lake and back down toward the Moose entrance. The gravel stretch north of the fee station is on the video below."',
-                'Bad example 3 (invents specifics the rider never said — do not write like this): rider\'s note says "headed home tomorrow" (no city, no method) -> "before the drive back to Chicago tomorrow." Write "before heading home tomorrow" instead — true to what was actually said.',
-                'Bad example 4 (invents a route shape from the road order alone — do not write like this): roads list is "Teton Village Road; Moose-Wilson Road; West Highway 22; Spring Gulch Road" -> "out along Teton Village Road, then looped back on Moose-Wilson Road and West Highway 22." Write "rode Teton Village Road, Moose-Wilson Road, West Highway 22, and Spring Gulch Road" instead — the order is real, the "looped back" shape is not.',
-                '',
-                'Ride data:',
-                `- Current activity name: ${detail.name}`,
-                `- Start (local): ${detail.start_date_local}`,
-                `- Distance: ${mi} mi · Moving time: ${timeStr} · Elevation gain: ${ft} ft`,
-                `- Video title: ${videoTitle}`,
-                `- Popular segments ridden (most riders first): ${segments.join('; ') || 'n/a'}`,
-              ];
-              if (roadNames.length) {
-                promptLines.push(`- Roads ridden, in the order ridden: ${roadNames.join('; ')}`);
-              }
-              if (riderNotes) {
-                promptLines.push(
-                  '',
-                  'The rider recorded these notes right after finishing (their own words, voice-to-text, may be informal or fragmented). These notes are the PRIMARY source for the opener — lead with what the rider actually said (including how they felt about the ride, plans, anything notable that happened), and use the road/segment data above as supporting detail woven in where it fits naturally, not as a checklist to complete. Don\'t let a full recitation of roads crowd out the rider\'s own words. Keep following every style rule above (plain/factual, no metaphor, no personification, no repetition, no invented specifics):',
-                  `"""${riderNotes}"""`
-                );
-              }
-              const prompt = promptLines.join('\n');
-
-              const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
-                method: 'POST',
-                headers: {
-                  'x-api-key': CLAUDE_KEY,
-                  'anthropic-version': '2023-06-01',
-                  'content-type': 'application/json',
-                },
-                body: JSON.stringify({
-                  model: 'claude-opus-4-8',
-                  max_tokens: 1024,
-                  messages: [{ role: 'user', content: prompt }],
-                  output_config: {
-                    format: {
-                      type: 'json_schema',
-                      schema: {
-                        type: 'object',
-                        properties: {
-                          title: { type: 'string' },
-                          opener: { type: 'string' },
-                        },
-                        required: ['title', 'opener'],
-                        additionalProperties: false,
-                      },
-                    },
-                  },
-                }),
-              });
-              const claudeData = await claudeRes.json();
-              if (claudeRes.ok && claudeData.stop_reason !== 'refusal') {
-                const text = (claudeData.content || [])
-                  .filter(b => b.type === 'text').map(b => b.text).join('').trim();
-                const parsed = JSON.parse(text);
-                if (parsed.title && parsed.title.length <= 100) {
-                  title = parsed.title.trim();
-                }
-                if (parsed.opener && parsed.opener.length <= 400) {
-                  hook = parsed.opener.trim();
-                }
+              const segments = await strava.rankSegmentsByPopularity(access_token, detail.segment_efforts || []);
+              const prompt = buildRecapPrompt({ detail, mi, timeStr, ft, videoTitle, segments, roadNames, riderNotes });
+              const result = await generateRecap({ prompt, apiKey: CLAUDE_KEY });
+              if (result.ok) {
+                if (result.title) title = result.title;
+                if (result.opener) hook = result.opener;
                 console.log('Using Claude-generated title and opener' + (riderNotes ? ' (with rider notes).' : '.'));
               } else {
-                console.log('Claude API error — falling back to existing title / video title:', JSON.stringify(claudeData.error || claudeData.stop_reason));
+                console.log('Claude API error — falling back to existing title / video title:', JSON.stringify(result.error));
               }
             } catch (err) {
               console.log('Claude call failed — falling back to existing title / video title:', err.message);
@@ -470,22 +294,10 @@ jobs:
           // 8. Update the activity description (and title, if Claude generated one)
           //    (Strava's API no longer allows posting comments, so we update
           //    the activity directly instead — fully supported with activity:write)
-          const updateBody = { description: newDescription };
-          if (title) updateBody.name = title;
-          const updRes = await fetch(
-            `https://www.strava.com/api/v3/activities/${activity.id}`,
-            {
-              method: 'PUT',
-              headers: {
-                Authorization: `Bearer ${access_token}`,
-                'Content-Type': 'application/x-www-form-urlencoded',
-              },
-              body: new URLSearchParams(updateBody).toString(),
-            }
-          );
-          if (!updRes.ok) {
-            const body = await updRes.text();
-            console.error(`Strava activity update failed (${updRes.status}):`, body);
+          try {
+            await strava.updateActivity(access_token, activity.id, { description: newDescription, name: title });
+          } catch (e) {
+            console.error(e.message);
             process.exit(1);
           }
           console.log(`Updated Strava activity ${activity.id} (title: "${title || detail.name}") with ${videoUrl}`);
@@ -503,33 +315,10 @@ jobs:
             console.log('YouTube OAuth secrets not configured — skipping YouTube description sync.');
           } else {
             try {
-              const ytTokenRes = await fetch('https://oauth2.googleapis.com/token', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                  client_id: YT_OAUTH_ID,
-                  client_secret: YT_OAUTH_SECRET,
-                  refresh_token: YT_OAUTH_REFRESH,
-                  grant_type: 'refresh_token',
-                }).toString(),
+              const ytAccessToken = await youtube.refreshOAuthToken({
+                clientId: YT_OAUTH_ID, clientSecret: YT_OAUTH_SECRET, refreshToken: YT_OAUTH_REFRESH,
               });
-              const ytTokenData = await ytTokenRes.json();
-              if (!ytTokenData.access_token) {
-                throw new Error('YouTube OAuth refresh failed: ' + JSON.stringify(ytTokenData));
-              }
-              const ytAccessToken = ytTokenData.access_token;
-
-              // videos.update requires resending the whole snippet (title/categoryId/etc.)
-              // or YouTube silently clears the fields we don't include — fetch it first.
-              const snippetRes = await fetch(
-                `https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${encodeURIComponent(videoId)}`,
-                { headers: { Authorization: `Bearer ${ytAccessToken}` } }
-              );
-              const snippetData = await snippetRes.json();
-              const currentSnippet = (snippetData.items || [])[0]?.snippet;
-              if (!currentSnippet) {
-                throw new Error('Could not fetch current YouTube video snippet.');
-              }
+              const currentSnippet = await youtube.getVideoSnippet(ytAccessToken, videoId);
 
               const currentYtDescription = currentSnippet.description || '';
               if (currentYtDescription.includes(stravaActivityUrl)) {
@@ -544,21 +333,7 @@ jobs:
                   ? `${currentYtDescription}\n\n${ytBlock}`
                   : ytBlock;
 
-                const updateRes = await fetch('https://www.googleapis.com/youtube/v3/videos?part=snippet', {
-                  method: 'PUT',
-                  headers: {
-                    Authorization: `Bearer ${ytAccessToken}`,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify({
-                    id: videoId,
-                    snippet: { ...currentSnippet, description: mutatedDescription },
-                  }),
-                });
-                if (!updateRes.ok) {
-                  const errBody = await updateRes.text();
-                  throw new Error(`YouTube videos.update failed (${updateRes.status}): ${errBody}`);
-                }
+                await youtube.updateVideoDescription(ytAccessToken, videoId, currentSnippet, mutatedDescription);
                 console.log(`Updated YouTube video ${videoId} description to link back to ${stravaActivityUrl}`);
               }
             } catch (err) {
