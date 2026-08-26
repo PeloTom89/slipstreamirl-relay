@@ -8,9 +8,9 @@
 // (/strava-authorize, /strava-callback, /strava-deauthorize — see AGENTS.md
 // "Strava account linking") and into the per-user recap loop
 // (tools/per-user-recap.mjs, consumed by
-// .github/workflows/strava-youtube-comment.yml) via listLinkedUsers(). The
-// key-upload endpoint for anthropicApiKeyEnc is still separate follow-up
-// work — the field is simply empty until that lands.
+// .github/workflows/strava-youtube-comment.yml) via listLinkedUsers(), and
+// into server.js's POST /settings/anthropic-key (see AGENTS.md) via
+// putAnthropicKey()/deleteAnthropicKey().
 //
 // Record shape, one JSON blob per Redis key `user:{twitchId}` (twitchId is
 // the same Twitch user id verifyTwitchUser()/POST /channel-token already key
@@ -198,6 +198,13 @@ function createUserStore({
     return saveUser(record);
   }
 
+  async function deleteAnthropicKey(twitchId) {
+    const existing = await getUser(twitchId);
+    if (!existing) return null;
+    const record = { ...existing, anthropicApiKeyEnc: null, updatedAt: new Date().toISOString() };
+    return saveUser(record);
+  }
+
   // Decrypted read helpers — for in-process use only. Decrypt immediately
   // before use; never log the returned plaintext.
   async function getStravaRefreshToken(twitchId) {
@@ -238,6 +245,7 @@ function createUserStore({
     putStravaLink,
     putAnthropicKey,
     deleteStravaLink,
+    deleteAnthropicKey,
     getStravaRefreshToken,
     getAnthropicKey,
     listLinkedUsers,

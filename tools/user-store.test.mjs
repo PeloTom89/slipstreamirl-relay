@@ -196,6 +196,20 @@ describe("createUserStore against a stubbed Upstash REST endpoint", () => {
     assert.equal(await store.getStravaRefreshToken("twitch-6"), null);
   });
 
+  test("deleteAnthropicKey clears the key but leaves an existing strava link", async () => {
+    await store.putStravaLink("twitch-6b", { athleteId: 4, refreshToken: "refresh-1", scope: "read" });
+    await store.putAnthropicKey("twitch-6b", "sk-ant-1");
+    await store.deleteAnthropicKey("twitch-6b");
+    const record = await store.getUser("twitch-6b");
+    assert.equal(record.anthropicApiKeyEnc, null);
+    assert.equal(record.strava.athleteId, 4, "strava link must be unaffected by an anthropic key clear");
+    assert.equal(await store.getAnthropicKey("twitch-6b"), null);
+  });
+
+  test("deleteAnthropicKey on an unknown id is a no-op, not an error", async () => {
+    assert.equal(await store.deleteAnthropicKey("never-seen"), null);
+  });
+
   test("deleteStravaLink on an unknown id is a no-op, not an error", async () => {
     assert.equal(await store.deleteStravaLink("no-such-user"), null);
   });

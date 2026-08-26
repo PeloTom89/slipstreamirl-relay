@@ -649,6 +649,50 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Store (or clear) the caller's own Anthropic API key, so server-side recap
+  // generation (tools/per-user-recap.mjs) uses it instead of the captain's
+  // ANTHROPIC_API_KEY. Identity via verifyTwitchUser(), same as every other
+  // authenticated endpoint here — never a caller-supplied Twitch id. This is
+  // the same key the app already stores on-device for the BYO-title feature;
+  // this endpoint just uploads a copy, encrypted, for the recap runner to
+  // read. See README.md "Per-user Anthropic key".
+  //   POST /settings/anthropic-key   body: {"twitchAccessToken":"...","anthropicApiKey":"..."}
+  //   -> 200 {"ok":true}   (omit/empty anthropicApiKey to clear the stored key)
+  //   -> 400 bad input, 401 identity couldn't be verified,
+  //      503 user store not configured
+  if (req.method === "POST" && pathOnly === "/settings/anthropic-key") {
+    if (!MULTI_TENANT) { res.writeHead(404); res.end(); return; }
+    const done = (status, obj) => {
+      res.writeHead(status, { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" });
+      res.end(JSON.stringify(obj));
+    };
+    if (!userStore) return done(503, { error: "user store not configured" });
+    let body = "";
+    req.on("data", (c) => { body += c; if (body.length > 4000) req.destroy(); });
+    req.on("end", async () => {
+      let twitchAccessToken, anthropicApiKey;
+      try { ({ twitchAccessToken, anthropicApiKey } = JSON.parse(body)); } catch { return done(400, { error: "bad json" }); }
+      if (!twitchAccessToken || typeof twitchAccessToken !== "string") {
+        return done(400, { error: "twitchAccessToken required" });
+      }
+      if (anthropicApiKey !== undefined && anthropicApiKey !== null && typeof anthropicApiKey !== "string") {
+        return done(400, { error: "anthropicApiKey must be a string" });
+      }
+      if (typeof anthropicApiKey === "string" && anthropicApiKey.length > 200) {
+        return done(400, { error: "anthropicApiKey too long" });
+      }
+      const twitchId = await verifyTwitchUser(twitchAccessToken).catch(() => null);
+      if (!twitchId) return done(401, { error: "could not verify Twitch identity" });
+      if (typeof anthropicApiKey === "string" && anthropicApiKey.length > 0) {
+        await userStore.putAnthropicKey(twitchId, anthropicApiKey);
+      } else {
+        await userStore.deleteAnthropicKey(twitchId);
+      }
+      done(200, { ok: true });
+    });
+    return;
+  }
+
   // HTTP location push — used by the native app while backgrounded (can't hold a WS open).
   //   POST /push?token=RELAY_TOKEN   body: {"lat":..,"lng":..,"acc":..}
   //   Multi-tenant mode: POST /push?channel=<id>&token=<channel JWT>

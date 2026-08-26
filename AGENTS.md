@@ -129,12 +129,11 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   decrypt anything; `createUserStore()` throws at construction if
   `TOKEN_ENCRYPTION_KEY` is missing/malformed rather than falling back to
   plaintext. Wired into `server.js`'s Strava account linking endpoints (see
-  below) via `putStravaLink`/`getStravaRefreshToken`/`deleteStravaLink`; the
-  per-user Anthropic key it also stores (`putAnthropicKey`/`getAnthropicKey`)
-  and the recap-generation changes that would consume either are still
-  separate follow-up work. Unlike `stripe-entitlement.js`, this module's
-  whole point IS durable local state — don't conflate the two or apply
-  stripe-entitlement's "zero durable state" rule here.
+  below) via `putStravaLink`/`getStravaRefreshToken`/`deleteStravaLink`, and
+  into `POST /settings/anthropic-key` (see below) via
+  `putAnthropicKey`/`deleteAnthropicKey`. Unlike `stripe-entitlement.js`, this
+  module's whole point IS durable local state — don't conflate the two or
+  apply stripe-entitlement's "zero durable state" rule here.
 - **Strava account linking** (`GET /strava-authorize`, `GET /strava-callback`,
   `POST /strava-deauthorize` in `server.js`; helpers in
   `tools/strava-oauth.js` and `tools/strava-state-token.js`) is the first
@@ -158,6 +157,18 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   live at Strava. See README.md "Strava account linking" for the full
   contract and setup steps; `tools/relay-strava.test.mjs` covers all of the
   above end-to-end against stubbed Twitch/Strava/Upstash.
+- **`POST /settings/anthropic-key`** (`server.js`) is the upload path for the
+  per-user Anthropic key that `tools/per-user-recap.mjs` already read (see
+  below) — same identity pattern as everything else here
+  (`verifyTwitchUser()` on the caller's Twitch access token, never a
+  body-supplied id), gated on `MULTI_TENANT` + the user store being
+  configured. `anthropicApiKey` omitted or `""` clears the stored key
+  (`deleteAnthropicKey()`) rather than storing it, reverting that user to the
+  captain's-key fallback. Deliberately does not validate the key against
+  Anthropic — that happens naturally the first time it's used. See README.md
+  "Per-user Anthropic key" for the full contract;
+  `tools/relay-anthropic-key.test.mjs` covers it against stubbed
+  Twitch/Upstash.
 - **Per-user Strava recaps** (`tools/per-user-recap.mjs`,
   `tools/user-store.js`'s `listLinkedUsers()`, and the "Per-user Strava
   recaps" step in `.github/workflows/strava-youtube-comment.yml`) loop the
