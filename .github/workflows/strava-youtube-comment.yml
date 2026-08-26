@@ -342,6 +342,80 @@ jobs:
           }
           EOF
 
+      - name: Per-user Strava recaps
+        env:
+          UPSTASH_REDIS_REST_URL:   ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          TOKEN_ENCRYPTION_KEY:     ${{ secrets.TOKEN_ENCRYPTION_KEY }}
+          STRAVA_CLIENT_ID:         ${{ secrets.STRAVA_CLIENT_ID }}
+          STRAVA_CLIENT_SECRET:     ${{ secrets.STRAVA_CLIENT_SECRET }}
+          STRAVA_REFRESH_TOKEN:     ${{ secrets.STRAVA_REFRESH_TOKEN }}
+          ANTHROPIC_API_KEY:        ${{ secrets.ANTHROPIC_API_KEY }}
+          MAPBOX_TOKEN:             ${{ secrets.MAPBOX_TOKEN }}
+          DRY_RUN:                  ${{ github.event.inputs.dry_run }}
+        run: |
+          node --input-type=module <<'EOF'
+          import { createUserStore } from './tools/user-store.js';
+          import { createStravaClient } from './tools/strava-client.mjs';
+          import { runPerUserRecaps } from './tools/per-user-recap.mjs';
+
+          const UPSTASH_URL   = process.env.UPSTASH_REDIS_REST_URL;
+          const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+          const ENC_KEY       = process.env.TOKEN_ENCRYPTION_KEY;
+          const S_ID          = process.env.STRAVA_CLIENT_ID;
+          const S_SECRET      = process.env.STRAVA_CLIENT_SECRET;
+          const S_REFRESH     = process.env.STRAVA_REFRESH_TOKEN;
+          const DRY_RUN       = process.env.DRY_RUN === 'true';
+
+          // Deliberately independent of the captain's own YOUTUBE_*/single-account
+          // secrets above — a captain who hasn't set up YouTube must still get
+          // per-user recaps once the three store secrets below are added. Only
+          // needs the durable store plus the shared Strava API application
+          // credentials (the same STRAVA_CLIENT_ID/SECRET as the step above — one
+          // Strava app, many users' tokens). See AGENTS.md/README.md "Strava/YouTube
+          // auto-post workflow" for the required secrets.
+          if (!UPSTASH_URL || !UPSTASH_TOKEN || !ENC_KEY || !S_ID || !S_SECRET) {
+            console.log('Per-user recap store not configured (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN / TOKEN_ENCRYPTION_KEY / STRAVA_CLIENT_ID / STRAVA_CLIENT_SECRET) — skipping per-user loop; only the captain single-account run above applies.');
+            process.exit(0);
+          }
+
+          const userStore = createUserStore({
+            encryptionKey: ENC_KEY,
+            upstashUrl: UPSTASH_URL,
+            upstashToken: UPSTASH_TOKEN,
+          });
+
+          // Dedupe: if the captain's own account is ALSO linked via the store (e.g.
+          // he links through the app too), skip that store entry so his activity
+          // isn't processed twice in one run — resolved by Strava athlete id (not
+          // twitch id), since the captain's secret-based credential and his store
+          // entry are two independent Strava tokens for the same athlete.
+          let excludeAthleteId = null;
+          if (S_REFRESH) {
+            try {
+              const captainClient = createStravaClient();
+              const captainAccessToken = await captainClient.refreshAccessToken({
+                clientId: S_ID, clientSecret: S_SECRET, refreshToken: S_REFRESH,
+              });
+              const athlete = await captainClient.getAuthenticatedAthlete(captainAccessToken);
+              excludeAthleteId = athlete && athlete.id != null ? athlete.id : null;
+            } catch (e) {
+              console.log('Could not resolve captain athlete id for dedupe (non-fatal, per-user loop still runs):', e.message);
+            }
+          }
+
+          const summary = await runPerUserRecaps({
+            userStore,
+            clientId: S_ID,
+            clientSecret: S_SECRET,
+            fallbackAnthropicKey: process.env.ANTHROPIC_API_KEY || null,
+            mapboxToken: process.env.MAPBOX_TOKEN || null,
+            excludeAthleteId,
+            dryRun: DRY_RUN,
+          });
+          console.log('Per-user recap summary:', JSON.stringify(summary));
+          EOF
+
       - name: Delete consumed ride summary
         if: steps.ride_summary.outputs.found == 'true' && steps.sync.outputs.strava_updated == 'true'
         env:

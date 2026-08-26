@@ -30,6 +30,20 @@ export function createStravaClient({
     return data.access_token;
   }
 
+  // The currently-authenticated athlete's own profile (includes `id`). Used
+  // by the per-user recap loop (tools/per-user-recap.mjs) to resolve the
+  // captain's own Strava athlete id for dedupe against the per-user store —
+  // see AGENTS.md.
+  async function getAuthenticatedAthlete(accessToken) {
+    const res = await fetchImpl(`${apiBase}/athlete`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) {
+      throw new Error(`Strava athlete fetch failed (${res.status}): ${await res.text()}`);
+    }
+    return res.json();
+  }
+
   async function listRecentActivities(accessToken, perPage = 10) {
     const res = await fetchImpl(`${apiBase}/athlete/activities?per_page=${perPage}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -134,6 +148,7 @@ export function createStravaClient({
 
   return {
     refreshAccessToken,
+    getAuthenticatedAthlete,
     listRecentActivities,
     getTargetActivity,
     getActivityDetail,

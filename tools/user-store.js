@@ -4,9 +4,13 @@
 // server.js is CommonJS and needs to require() this synchronously at request
 // time — see AGENTS.md.
 //
-// NOT wired into server.js yet — this module is the storage primitive only.
-// The Strava OAuth flow, key-upload endpoint, and recap changes that will
-// consume it are separate follow-up work.
+// Wired into server.js's Strava account linking endpoints
+// (/strava-authorize, /strava-callback, /strava-deauthorize — see AGENTS.md
+// "Strava account linking") and into the per-user recap loop
+// (tools/per-user-recap.mjs, consumed by
+// .github/workflows/strava-youtube-comment.yml) via listLinkedUsers(). The
+// key-upload endpoint for anthropicApiKeyEnc is still separate follow-up
+// work — the field is simply empty until that lands.
 //
 // Record shape, one JSON blob per Redis key `user:{twitchId}` (twitchId is
 // the same Twitch user id verifyTwitchUser()/POST /channel-token already key
@@ -104,9 +108,34 @@ async function upstashSet(apiBase, token, fetchImpl, key, value) {
   if (!r.ok) throw new Error("upstash set failed: " + r.status);
 }
 
+// Upstash REST maps `SCAN cursor MATCH pattern COUNT n` to consecutive path
+// segments: /scan/<cursor>/match/<pattern>/count/<n>, returning
+// { result: [nextCursor, [key, ...]] }. SCAN is a cursor iteration, not a
+// snapshot read — one page is never guaranteed to hold every key, so callers
+// must follow nextCursor until it comes back "0".
+async function upstashScan(apiBase, token, fetchImpl, cursor, pattern, count) {
+  const url =
+    apiBase +
+    "/scan/" + encodeURIComponent(cursor) +
+    "/match/" + encodeURIComponent(pattern) +
+    "/count/" + encodeURIComponent(String(count));
+  const r = await fetchImpl(url, { headers: { Authorization: "Bearer " + token } });
+  if (!r.ok) throw new Error("upstash scan failed: " + r.status);
+  const j = await r.json();
+  const [nextCursor, keys] = j.result || ["0", []];
+  return { nextCursor: String(nextCursor), keys: keys || [] };
+}
+
 function emptyRecord(twitchId) {
   return { twitchId, strava: null, anthropicApiKeyEnc: null, updatedAt: null };
 }
+
+// SCAN page size and a belt-and-suspenders cap on the number of pages
+// followed — real Redis SCAN always terminates (cursor "0"), but this stops
+// an unexpected non-terminating cursor (a stub bug, a proxy in front of
+// Upstash) from hanging the caller forever.
+const SCAN_COUNT = 100;
+const MAX_SCAN_PAGES = 1000;
 
 function createUserStore({
   encryptionKey = process.env.TOKEN_ENCRYPTION_KEY,
@@ -114,6 +143,7 @@ function createUserStore({
   upstashToken = process.env.UPSTASH_REDIS_REST_TOKEN,
   apiBase = process.env.UPSTASH_API_BASE || upstashUrl,
   fetchImpl = fetch,
+  scanCount = SCAN_COUNT,
 } = {}) {
   const key = parseEncryptionKey(encryptionKey);
   if (!upstashUrl) throw new Error("upstashUrl (UPSTASH_REDIS_REST_URL) required");
@@ -182,6 +212,27 @@ function createUserStore({
     return decrypt(key, record.anthropicApiKeyEnc);
   }
 
+  // Enumerates every `user:*` record via SCAN and returns only the ones that
+  // actually hold a live Strava link (skips records that only have an
+  // Anthropic key, or are otherwise empty) — used by the per-user recap loop
+  // in .github/workflows/strava-youtube-comment.yml (see
+  // tools/per-user-recap.mjs). Not a snapshot: a record linked or unlinked
+  // mid-scan may or may not appear, same caveat as Redis SCAN generally.
+  async function listLinkedUsers() {
+    let cursor = "0";
+    const keys = [];
+    for (let page = 0; page < MAX_SCAN_PAGES; page++) {
+      const { nextCursor, keys: pageKeys } = await upstashScan(apiBase, upstashToken, fetchImpl, cursor, "user:*", scanCount);
+      keys.push(...pageKeys);
+      cursor = nextCursor;
+      if (cursor === "0") break;
+    }
+    const records = await Promise.all(
+      keys.map((key) => getUser(key.startsWith("user:") ? key.slice("user:".length) : key))
+    );
+    return records.filter((r) => r && r.strava);
+  }
+
   return {
     getUser,
     putStravaLink,
@@ -189,6 +240,7 @@ function createUserStore({
     deleteStravaLink,
     getStravaRefreshToken,
     getAnthropicKey,
+    listLinkedUsers,
   };
 }
 

@@ -259,6 +259,53 @@ enables real road-name matching); `YOUTUBE_OAUTH_CLIENT_ID` /
 `YOUTUBE_OAUTH_CLIENT_SECRET` / `YOUTUBE_OAUTH_REFRESH_TOKEN` (optional — mirrors
 the description onto the YouTube video too).
 
+### Per-user Strava recaps
+
+A second, independent step in the same workflow (`Per-user Strava recaps`) loops
+the same recap flow over every user who has linked their own Strava account (see
+**Strava account linking** below) — **not** just the one hardwired account above.
+Each linked user gets their own Strava activity's title/description written from
+their own latest ride, using their own stored Strava credential.
+
+- **YouTube stays captain-only.** The per-user step never looks at YouTube — no
+  video-upload check, no YouTube description mirroring. It writes a
+  title/opener/stat line straight to each user's own Strava activity, gated by a
+  `— recap via SlipstreamIRL` marker in the description (rather than the
+  "already has a youtube.com link" check the captain path uses) so the same
+  activity isn't re-processed on the next run.
+- **LLM key selection:** each user's own `anthropicApiKeyEnc`, if the app-side
+  upload for it has landed and they've set one; otherwise falls back to the
+  same `ANTHROPIC_API_KEY` secret the captain path uses. A user without their
+  own key still gets a recap.
+- **Captain dedupe:** if the captain's own account is *also* linked via the
+  store (e.g. he links through the app too), that store entry is skipped —
+  matched by Strava athlete id, not Twitch id — so his own activity isn't
+  processed twice in one run; the step above already covers it.
+- **Per-user failure isolation:** one user's failure (Strava/Claude error, rate
+  limit, etc.) is logged by twitch/athlete id and the loop moves on — it never
+  aborts the run or affects any other user. A refresh token that no longer
+  works (the user revoked access from Strava's own settings) is treated as "no
+  longer linked": the local link is deleted so the cron stops retrying it every
+  30 minutes, same self-heal posture as Stripe reconciliation and the Mapbox
+  fallback above.
+- **Rate limit:** Strava's API limit is per-application, shared across every
+  user this step processes (not per-athlete) — roughly 100-200 requests/15min,
+  1000-2000/day on a standard app. Fine at beta scale; see the comment at the
+  top of `tools/per-user-recap.mjs` if this needs throttling later.
+- This step is **independent of the captain secrets above** — it only needs
+  `STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` (the same Strava API application,
+  shared across every user's token) plus the three durable-store secrets below.
+  A captain who hasn't set up YouTube still gets per-user recaps once those are
+  added. Respects the same `dry_run` `workflow_dispatch` input as the captain
+  step (simulates the same flow per user, writes nothing).
+
+**Additional GitHub Actions secrets required** (on top of the ones above,
+`STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` are shared with the captain step):
+`UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `TOKEN_ENCRYPTION_KEY` —
+the same values set on the relay for the **durable per-user store** below. Until
+these three are added to the repo's secrets, this step logs a skip and exits
+cleanly — only the captain's single-account run applies.
+
 ## Stripe entitlement
 
 This is an optional, opt-in layer on top of multi-tenant mode: it lets a
@@ -409,7 +456,12 @@ shouldn't need a subscription or a hand-added id.
 per-user Anthropic keys, keyed on Twitch user id — backed by Upstash Redis's
 free-tier REST API, with secrets encrypted application-side (AES-256-GCM)
 before they ever reach Upstash. It's wired into **Strava account linking**
-below; a later change wires per-user Anthropic keys into the recap workflow.
+below and into the **per-user Strava recaps** step above via
+`listLinkedUsers()` (a paginated `SCAN` over every `user:*` record, returning
+only the ones with a live Strava link). The app-side upload endpoint for
+per-user Anthropic keys is still separate follow-up work — until it lands,
+`anthropicApiKeyEnc` stays empty and every user's recap falls back to the
+captain's own `ANTHROPIC_API_KEY`.
 
 - `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` — from your Upstash
   Redis database's REST API credentials.
@@ -425,9 +477,10 @@ rather than issuing anything or crashing at boot.
 ## Strava account linking
 
 Lets a signed-in user connect **their own** Strava account from the app —
-the first per-user piece of making Strava recaps multi-tenant (the recap
-workflow above still runs against one hardwired account via GitHub Actions
-secrets; a later change makes it read from this store instead). Multi-tenant
+the first per-user piece of making Strava recaps multi-tenant. The recap
+workflow above now loops over everyone linked here (**per-user Strava
+recaps**), alongside the original single hardwired account via GitHub Actions
+secrets, which keeps running unchanged. Multi-tenant
 mode only (`MULTI_TENANT=1`), and only once both the **durable per-user
 store** above and `STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` below are set —
 either piece missing leaves the three endpoints below answering `503`.

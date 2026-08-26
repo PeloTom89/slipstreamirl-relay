@@ -158,6 +158,45 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   live at Strava. See README.md "Strava account linking" for the full
   contract and setup steps; `tools/relay-strava.test.mjs` covers all of the
   above end-to-end against stubbed Twitch/Strava/Upstash.
+- **Per-user Strava recaps** (`tools/per-user-recap.mjs`,
+  `tools/user-store.js`'s `listLinkedUsers()`, and the "Per-user Strava
+  recaps" step in `.github/workflows/strava-youtube-comment.yml`) loop the
+  same recap flow — `strava-client.mjs`/`road-matching.mjs`/
+  `recap-writer.mjs`, reused unmodified — over every user linked via
+  **Strava account linking** above, on top of (not instead of) the original
+  single-account run. `listLinkedUsers()` is a paginated Upstash `SCAN` over
+  `user:*` (path-style REST command: `/scan/<cursor>/match/<pattern>/count/<n>`,
+  followed to cursor `"0"` — never assume one page), filtered to records that
+  actually hold a live `strava` link. Deliberately **YouTube-free** — no
+  video lookup, no YouTube mirroring, per the approved scope decision; gated
+  instead by its own `RECAP_MARKER` string in the activity description (there's
+  no YouTube-link check to reuse for idempotency). LLM key selection is each
+  user's own decrypted `anthropicApiKeyEnc` if present, else the captain's
+  `ANTHROPIC_API_KEY` — graceful degradation, not a hard requirement. The new
+  workflow step is **independent of the captain's YOUTUBE_*/single-account
+  secrets** (only needs `STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` — shared
+  Strava API app — plus `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN`/
+  `TOKEN_ENCRYPTION_KEY`), so a captain without YouTube configured still gets
+  per-user recaps; it exits cleanly (zero users processed) when those three
+  store secrets are absent. Dedupes the captain's own account (if also linked
+  via the store) by Strava **athlete id** (via `strava-client.mjs`'s
+  `getAuthenticatedAthlete()`), not Twitch id — the secret-based credential
+  and a store-linked credential are two independent tokens for the same
+  athlete. Per-user failure isolation has two distinct paths in
+  `runPerUserRecaps()`: a refresh-token failure is tagged
+  `err.code === "STRAVA_AUTH_FAILURE"` and triggers `deleteStravaLink()` (self-
+  heal — the user revoked access, stop retrying forever); any other failure
+  (Strava/Claude/network) is just logged by twitch id and the loop continues —
+  neither aborts the run or touches another user. Strava's rate limit is
+  **per-application**, shared across every user this loop processes (see the
+  comment at the top of `tools/per-user-recap.mjs`) — fine at beta scale, a
+  future scale-up should throttle. See README.md "Per-user Strava recaps" for
+  the full contract; `tools/per-user-recap.test.mjs` and the `listLinkedUsers`
+  suite in `tools/user-store.test.mjs` cover this against stubs — the live
+  per-user round-trip against real Strava accounts is unverified until the
+  three store secrets are set on the repo and a real linked user has an
+  activity (use `workflow_dispatch` with `dry_run` to sanity-check without
+  writing anything).
 
 ## Maintaining this file
 
