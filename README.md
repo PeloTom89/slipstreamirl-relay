@@ -396,3 +396,19 @@ shouldn't need a subscription or a hand-added id.
   min)* — how often the URL above is re-polled.
 - `BETA_OPEN_ACCESS` *(optional)* — see **Beta allowlist** above. Does not
   require `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` to be set.
+
+## Durable per-user store (not yet wired in)
+
+`tools/user-store.js` is a durable per-user store — Strava links and
+per-user Anthropic keys, keyed on Twitch user id — backed by Upstash Redis's
+free-tier REST API, with secrets encrypted application-side (AES-256-GCM)
+before they ever reach Upstash. **It's unused by the running relay today**;
+a later change wires it into `POST /channel-token` and the upcoming Strava
+OAuth flow. Setting these now is safe but has no effect yet:
+
+- `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` — from your Upstash
+  Redis database's REST API credentials.
+- `TOKEN_ENCRYPTION_KEY` — 32 bytes, base64 or hex, used to encrypt/decrypt
+  secrets before they're stored. Keep this **independent** from the Upstash
+  token — a leaked Upstash credential alone must not be enough to decrypt
+  anything stored there. Never commit it.
