@@ -111,7 +111,7 @@ describe("runRecapForUser", () => {
     assert.equal(body.name, null); // no title generated without a Claude call
   });
 
-  test("key selection: falls back to the captain's key when the user has none of their own", async () => {
+  test("key selection: falls back to the operator's key when the user has none of their own", async () => {
     const userStore = makeUserStore({ anthropicKey: null });
     let seenApiKey;
     const stravaClient = makeStravaClient();
@@ -135,12 +135,12 @@ describe("runRecapForUser", () => {
     };
     try {
       await runRecapForUser({
-        twitchId: "t1", userStore, stravaClient, fallbackAnthropicKey: "captain-key", log: () => {},
+        twitchId: "t1", userStore, stravaClient, fallbackAnthropicKey: "operator-key", log: () => {},
       });
     } finally {
       globalThis.fetch = originalFetch;
     }
-    assert.equal(seenApiKey, "captain-key");
+    assert.equal(seenApiKey, "operator-key");
   });
 
   test("key selection: uses the user's own key over the fallback when both are present", async () => {
@@ -159,7 +159,7 @@ describe("runRecapForUser", () => {
     };
     try {
       await runRecapForUser({
-        twitchId: "t1", userStore, stravaClient, fallbackAnthropicKey: "captain-key", log: () => {},
+        twitchId: "t1", userStore, stravaClient, fallbackAnthropicKey: "operator-key", log: () => {},
       });
     } finally {
       globalThis.fetch = originalFetch;
@@ -183,7 +183,7 @@ describe("runRecapForUser", () => {
     };
     try {
       await runRecapForUser({
-        twitchId: "t1", userStore, stravaClient, fallbackAnthropicKey: "captain-key", log: () => {},
+        twitchId: "t1", userStore, stravaClient, fallbackAnthropicKey: "operator-key", log: () => {},
       });
     } finally {
       globalThis.fetch = originalFetch;
@@ -324,9 +324,9 @@ describe("runPerUserRecaps", () => {
     assert.deepEqual(userStore.deleted, ["revoked"]);
   });
 
-  test("dedupes by athlete id against the captain's own account", async () => {
+  test("dedupes by athlete id against the operator's own account", async () => {
     const records = [
-      { twitchId: "captain-also-linked", strava: { athleteId: 42, refreshTokenRaw: "r1" } },
+      { twitchId: "operator-also-linked", strava: { athleteId: 42, refreshTokenRaw: "r1" } },
       { twitchId: "other-user", strava: { athleteId: 99, refreshTokenRaw: "r2" } },
     ];
     const userStore = makeStore(records);

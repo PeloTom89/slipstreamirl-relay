@@ -265,7 +265,7 @@ enables real road-name matching); `YOUTUBE_OAUTH_CLIENT_ID` /
 `YOUTUBE_OAUTH_CLIENT_SECRET` / `YOUTUBE_OAUTH_REFRESH_TOKEN` (optional — mirrors
 the description onto the YouTube video too); `CAPTAIN_TWITCH_ID` plus
 `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` / `TOKEN_ENCRYPTION_KEY`
-(optional — lets this step read/clear the captain's own dictated ride summary
+(optional — lets this step read/clear the operator's own dictated ride summary
 from the durable per-user store; see **Voice ride summary** below). Without
 `CAPTAIN_TWITCH_ID`, this step behaves exactly as if no summary was ever
 recorded — it never fails for lacking it.
@@ -278,24 +278,24 @@ the same recap flow over every user who has linked their own Strava account (see
 Each linked user gets their own Strava activity's title/description written from
 their own latest ride, using their own stored Strava credential.
 
-- **YouTube stays captain-only.** The per-user step never looks at YouTube — no
-  video-upload check, no YouTube description mirroring. It writes a
-  title/opener/stat line straight to each user's own Strava activity, gated by a
-  `— recap via SlipstreamIRL` marker in the description (rather than the
-  "already has a youtube.com link" check the captain path uses) so the same
-  activity isn't re-processed on the next run.
+- **YouTube stays limited to the primary account.** The per-user step never
+  looks at YouTube — no video-upload check, no YouTube description mirroring.
+  It writes a title/opener/stat line straight to each user's own Strava
+  activity, gated by a `— recap via SlipstreamIRL` marker in the description
+  (rather than the "already has a youtube.com link" check the single-account
+  path uses) so the same activity isn't re-processed on the next run.
 - **LLM key selection:** each user's own `anthropicApiKeyEnc`, if the app-side
   upload for it has landed and they've set one; otherwise falls back to the
-  same `ANTHROPIC_API_KEY` secret the captain path uses. A user without their
-  own key still gets a recap.
+  same `ANTHROPIC_API_KEY` secret the single-account path uses. A user without
+  their own key still gets a recap.
 - **Dictated ride notes:** if the rider recorded a Voice Ride Summary (see
   **Voice ride summary** below), it's read via `getRideSummary()` and folded
-  into the recap prompt exactly like the captain path's own dictated notes —
-  and cleared via `clearRideSummary()` after a successful write, so a stale
-  note isn't reused on the rider's next ride.
-- **Captain dedupe:** if the captain's own account is *also* linked via the
-  store (e.g. he links through the app too), that store entry is skipped —
-  matched by Strava athlete id, not Twitch id — so his own activity isn't
+  into the recap prompt exactly like the single-account path's own dictated
+  notes — and cleared via `clearRideSummary()` after a successful write, so a
+  stale note isn't reused on the rider's next ride.
+- **Operator dedupe:** if the operator's own account is *also* linked via the
+  store (e.g. they link through the app too), that store entry is skipped —
+  matched by Strava athlete id, not Twitch id — so their own activity isn't
   processed twice in one run; the step above already covers it.
 - **Per-user failure isolation:** one user's failure (Strava/Claude error, rate
   limit, etc.) is logged by twitch/athlete id and the loop moves on — it never
@@ -308,19 +308,21 @@ their own latest ride, using their own stored Strava credential.
   user this step processes (not per-athlete) — roughly 100-200 requests/15min,
   1000-2000/day on a standard app. Fine at beta scale; see the comment at the
   top of `tools/per-user-recap.mjs` if this needs throttling later.
-- This step is **independent of the captain secrets above** — it only needs
-  `STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` (the same Strava API application,
-  shared across every user's token) plus the three durable-store secrets below.
-  A captain who hasn't set up YouTube still gets per-user recaps once those are
-  added. Respects the same `dry_run` `workflow_dispatch` input as the captain
-  step (simulates the same flow per user, writes nothing).
+- This step is **independent of the single-account secrets above** — it only
+  needs `STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` (the same Strava API
+  application, shared across every user's token) plus the three durable-store
+  secrets below. An operator who hasn't set up YouTube still gets per-user
+  recaps once those are added. Respects the same `dry_run` `workflow_dispatch`
+  input as the single-account step (simulates the same flow per user, writes
+  nothing).
 
 **Additional GitHub Actions secrets required** (on top of the ones above,
-`STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` are shared with the captain step):
-`UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `TOKEN_ENCRYPTION_KEY` —
-the same values set on the relay for the **durable per-user store** below. Until
-these three are added to the repo's secrets, this step logs a skip and exits
-cleanly — only the captain's single-account run applies.
+`STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` are shared with the single-account
+step): `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`,
+`TOKEN_ENCRYPTION_KEY` — the same values set on the relay for the **durable
+per-user store** below. Until these three are added to the repo's secrets,
+this step logs a skip and exits cleanly — only the operator's single-account
+run applies.
 
 ## Discord merge changelog
 
@@ -592,7 +594,7 @@ above is configured.
 
 `POST /settings/anthropic-key` lets a signed-in user upload their own
 Anthropic API key so **per-user Strava recaps** (above) generate using their
-key instead of the captain's `ANTHROPIC_API_KEY`. It's the same key the app
+key instead of the operator's `ANTHROPIC_API_KEY`. It's the same key the app
 already stores on-device (Settings, used directly for the BYO-title feature)
 — this endpoint just uploads a copy for the recap runner to read.
 Multi-tenant mode only (`MULTI_TENANT=1`), and only once the **durable
@@ -606,7 +608,7 @@ trusted. On success the key is stored via `putAnthropicKey()` (encrypted, see
 validated only as a bounded-length string (rejects anything over 200 chars or
 non-string input) — it is never checked against Anthropic's API here.
 
-**Clearing the key** (reverting to the captain's-key fallback): send the same
+**Clearing the key** (reverting to the operator's-key fallback): send the same
 request with `anthropicApiKey` omitted or an empty string. Either shape
 calls `deleteAnthropicKey()`.
 
@@ -632,10 +634,10 @@ dictated rider text, not a credential.
 - **Per-user Strava recaps** (above) reads each linked user's summary via
   `getRideSummary()` and clears it via `clearRideSummary()` after a
   successful write, so it's used exactly once, on the next ride's recap.
-- **The captain's own single-account step** (above) reads/clears his own
+- **The operator's own single-account step** (above) reads/clears their own
   summary the same way, keyed by the optional `CAPTAIN_TWITCH_ID` GitHub
-  Actions secret — his app now uploads to the store under his own Twitch id
-  just like everyone else's, instead of anything file-based.
+  Actions secret — their app now uploads to the store under their own Twitch
+  id just like everyone else's, instead of anything file-based.
 
 **Retired mechanism:** this replaced committing `data/ride-summary.json` into
 this repo via the GitHub Contents API (`GITHUB_CONTENT_PAT`) — user-submitted
@@ -647,7 +649,7 @@ vars and the GitHub Actions secrets, along with the (now-unused)
 let the current workflow consume any pending `data/ride-summary.json` once
 *before* deploying this change — it's the last thing that will ever read that
 file — or port its contents into the store by hand
-(`putRideSummary(<captain twitch id>, {...})`) if you can't wait for the next
+(`putRideSummary(<operator twitch id>, {...})`) if you can't wait for the next
 ride.
 
 `tools/relay-ride-summary.test.mjs` covers the endpoint against stubbed

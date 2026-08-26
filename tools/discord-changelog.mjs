@@ -29,6 +29,7 @@ Rules:
 - 1 to 3 sentences, describing what actually changed for someone using the app or watching a stream — what's new, better, or fixed.
 - If the change is purely internal/behind-the-scenes plumbing with no effect a rider or viewer would notice, say so honestly and briefly (e.g. "Behind-the-scenes improvements to keep things running smoothly") — never invent a user-facing benefit that isn't there.
 - Do not make up features, numbers, or claims that aren't supported by the given title/description.
+- Never use internal role terms such as "the captain", "firstmate", or "crewmate" — refer to the person neutrally (e.g. "the developer", "the team") if a person needs mentioning at all, regardless of what the PR title/description say.
 - Keep the headline under 10 words, no ending punctuation.`;
 
 function truncate(str, max) {

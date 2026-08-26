@@ -153,7 +153,7 @@ function effectiveAllowlist() {
 }
 
 // Beta open access (see env var comment above): during the public beta the
-// captain wants EVERY identity-verified Twitch sign-in entitled, not just an
+// operator wants EVERY identity-verified Twitch sign-in entitled, not just an
 // allowlisted few — this is the "drop the manual step" switch. Deliberately
 // independent of entitlementStore/Stripe being configured at all: the whole
 // point is testers don't need a Stripe subscription behind them. Identity
@@ -643,7 +643,7 @@ const server = http.createServer((req, res) => {
   }
 
   // Store (or clear) the caller's own Anthropic API key, so server-side recap
-  // generation (tools/per-user-recap.mjs) uses it instead of the captain's
+  // generation (tools/per-user-recap.mjs) uses it instead of the operator's
   // ANTHROPIC_API_KEY. Identity via verifyTwitchUser(), same as every other
   // authenticated endpoint here — never a caller-supplied Twitch id. This is
   // the same key the app already stores on-device for the BYO-title feature;
@@ -788,7 +788,7 @@ const server = http.createServer((req, res) => {
   // Ride summary: store a voice-dictated post-ride summary in the durable
   // per-user store, keyed by the caller's verified Twitch id, so the
   // later-running Strava/YouTube workflow (the per-user recap step, plus the
-  // captain's own single-account step via CAPTAIN_TWITCH_ID) can fold it into
+  // operator's own single-account step via CAPTAIN_TWITCH_ID) can fold it into
   // that user's recap. Identity via verifyTwitchUser(), same as every other
   // authenticated endpoint here — never a body-supplied id. Multi-tenant mode
   // only, and only once the durable per-user store is configured — this

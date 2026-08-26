@@ -32,7 +32,7 @@ export function createStravaClient({
 
   // The currently-authenticated athlete's own profile (includes `id`). Used
   // by the per-user recap loop (tools/per-user-recap.mjs) to resolve the
-  // captain's own Strava athlete id for dedupe against the per-user store —
+  // operator's own Strava athlete id for dedupe against the per-user store —
   // see AGENTS.md.
   async function getAuthenticatedAthlete(accessToken) {
     const res = await fetchImpl(`${apiBase}/athlete`, {
