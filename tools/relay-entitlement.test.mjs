@@ -739,3 +739,106 @@ describe("multi-tenant mode without Stripe configured is unaffected (manual mint
     assert.equal(res.status, 503);
   });
 });
+
+describe("beta open access (BETA_OPEN_ACCESS) — no Stripe configured at all", () => {
+  // Deliberately no STRIPE_SECRET_KEY/STRIPE_WEBHOOK_SECRET: proves open
+  // access works on identity alone and does not require entitlementStore.
+  const JWT_SECRET = "test-jwt-secret";
+
+  let twitchStub, server;
+
+  before(async () => {
+    twitchStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      const authHeader = req.headers["authorization"] || "";
+      if (authHeader === "Bearer invalid-token") { res.end(JSON.stringify({ data: [] })); return; }
+      res.end(JSON.stringify({ data: [{ id: "streamer-open-access" }] }));
+    });
+    server = await startServer({
+      MULTI_TENANT: "1",
+      RELAY_JWT_SECRET: JWT_SECRET,
+      BETA_OPEN_ACCESS: "1",
+      TWITCH_HELIX_BASE: `http://127.0.0.1:${twitchStub.address().port}`,
+    });
+  });
+
+  after(async () => {
+    await server.stop();
+    await new Promise((r) => twitchStub.close(r));
+  });
+
+  test("an identity-verified id with no subscription and no allowlist entry still gets a token", async () => {
+    const res = await fetch(`${server.baseHttp}/channel-token`, {
+      method: "POST",
+      body: JSON.stringify({ twitchAccessToken: "fake-user-access-token" }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.channel, "streamer-open-access");
+    assert.ok(body.token);
+  });
+
+  test("an id whose Twitch token does not verify still gets 401 — identity is never bypassed", async () => {
+    const res = await fetch(`${server.baseHttp}/channel-token`, {
+      method: "POST",
+      body: JSON.stringify({ twitchAccessToken: "invalid-token" }),
+    });
+    assert.equal(res.status, 401);
+  });
+
+  test("the root status line shows open access is on", async () => {
+    const res = await fetch(`${server.baseHttp}/`);
+    const text = await res.text();
+    assert.match(text, /beta open access ON/);
+  });
+});
+
+describe("beta open access OFF (default) leaves the existing gated behavior unchanged", () => {
+  const JWT_SECRET = "test-jwt-secret";
+  const WEBHOOK_SECRET = "whsec_test";
+  const STRIPE_KEY = "sk_test_fake";
+
+  let twitchStub, stripeStub, server;
+
+  before(async () => {
+    twitchStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: [{ id: "streamer-not-entitled" }] }));
+    });
+    stripeStub = await startStub((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.url.startsWith("/subscriptions/search")) res.end(JSON.stringify({ data: [] }));
+      else res.end(JSON.stringify({ metadata: {} }));
+    });
+    server = await startServer({
+      MULTI_TENANT: "1",
+      RELAY_JWT_SECRET: JWT_SECRET,
+      STRIPE_SECRET_KEY: STRIPE_KEY,
+      STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      TWITCH_HELIX_BASE: `http://127.0.0.1:${twitchStub.address().port}`,
+      STRIPE_API_BASE: `http://127.0.0.1:${stripeStub.address().port}`,
+      // BETA_OPEN_ACCESS deliberately unset.
+    });
+  });
+
+  after(async () => {
+    await server.stop();
+    await new Promise((r) => twitchStub.close(r));
+    await new Promise((r) => stripeStub.close(r));
+  });
+
+  test("a non-entitled, non-allowlisted id still gets 403", async () => {
+    const res = await fetch(`${server.baseHttp}/channel-token`, {
+      method: "POST",
+      body: JSON.stringify({ twitchAccessToken: "fake-user-access-token" }),
+    });
+    assert.equal(res.status, 403);
+    assert.equal((await res.json()).error, "not entitled");
+  });
+
+  test("the root status line does not claim open access is on", async () => {
+    const res = await fetch(`${server.baseHttp}/`);
+    const text = await res.text();
+    assert.doesNotMatch(text, /beta open access ON/);
+  });
+});
