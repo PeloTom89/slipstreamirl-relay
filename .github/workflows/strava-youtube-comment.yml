@@ -93,10 +93,10 @@ jobs:
           // configured) just means no dictated notes get folded in here, same as
           // today when nothing was recorded.
           const CAPTAIN_TWITCH_ID = process.env.CAPTAIN_TWITCH_ID;
-          let captainUserStore = null;
+          let ownerUserStore = null;
           if (CAPTAIN_TWITCH_ID && process.env.TOKEN_ENCRYPTION_KEY && process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
             try {
-              captainUserStore = createUserStore({});
+              ownerUserStore = createUserStore({});
             } catch (e) {
               console.log('Could not construct user store for CAPTAIN_TWITCH_ID lookup (non-fatal, no dictated notes this run):', e.message);
             }
@@ -221,9 +221,9 @@ jobs:
           //     when it was actually consumed from there.
           let riderNotes = RIDER_NOTES_OVERRIDE || null;
           let usedStoredRideSummary = false;
-          if (!riderNotes && captainUserStore) {
+          if (!riderNotes && ownerUserStore) {
             try {
-              const stored = await captainUserStore.getRideSummary(CAPTAIN_TWITCH_ID);
+              const stored = await ownerUserStore.getRideSummary(CAPTAIN_TWITCH_ID);
               if (stored && typeof stored.summary === 'string' && stored.summary.trim()) {
                 riderNotes = stored.summary.trim();
                 usedStoredRideSummary = true;
@@ -316,9 +316,9 @@ jobs:
           // Consumed — clear the operator's stored ride summary so a stale note
           // isn't folded into their next ride, mirroring the per-user recap loop's
           // own clearRideSummary() after a successful write (tools/per-user-recap.mjs).
-          if (usedStoredRideSummary && captainUserStore) {
+          if (usedStoredRideSummary && ownerUserStore) {
             try {
-              await captainUserStore.clearRideSummary(CAPTAIN_TWITCH_ID);
+              await ownerUserStore.clearRideSummary(CAPTAIN_TWITCH_ID);
             } catch (e) {
               console.log('Failed to clear operator ride summary (non-fatal):', e.message);
             }
@@ -412,11 +412,11 @@ jobs:
           let excludeAthleteId = null;
           if (S_REFRESH) {
             try {
-              const captainClient = createStravaClient();
-              const captainAccessToken = await captainClient.refreshAccessToken({
+              const ownerClient = createStravaClient();
+              const ownerAccessToken = await ownerClient.refreshAccessToken({
                 clientId: S_ID, clientSecret: S_SECRET, refreshToken: S_REFRESH,
               });
-              const athlete = await captainClient.getAuthenticatedAthlete(captainAccessToken);
+              const athlete = await ownerClient.getAuthenticatedAthlete(ownerAccessToken);
               excludeAthleteId = athlete && athlete.id != null ? athlete.id : null;
             } catch (e) {
               console.log('Could not resolve operator athlete id for dedupe (non-fatal, per-user loop still runs):', e.message);
