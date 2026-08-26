@@ -128,12 +128,18 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   deliberately two independent secrets, so a leaked Upstash token alone can't
   decrypt anything; `createUserStore()` throws at construction if
   `TOKEN_ENCRYPTION_KEY` is missing/malformed rather than falling back to
-  plaintext. Wired into `server.js`'s Strava account linking endpoints (see
-  below) via `putStravaLink`/`getStravaRefreshToken`/`deleteStravaLink`, and
-  into `POST /settings/anthropic-key` (see below) via
-  `putAnthropicKey`/`deleteAnthropicKey`. Unlike `stripe-entitlement.js`, this
-  module's whole point IS durable local state — don't conflate the two or
-  apply stripe-entitlement's "zero durable state" rule here.
+  plaintext. The one exception is `rideSummary` (`{summary, recordedAt}`,
+  see below) — deliberately plaintext, since it's low-sensitivity dictated
+  rider text, not a credential; don't lump it in with the encrypted-secret
+  fields when reasoning about this module. Wired into `server.js`'s Strava
+  account linking endpoints (see below) via
+  `putStravaLink`/`getStravaRefreshToken`/`deleteStravaLink`, into
+  `POST /settings/anthropic-key` (see below) via
+  `putAnthropicKey`/`deleteAnthropicKey`, and into `POST /ride-summary` (see
+  below) via `putRideSummary`/`getRideSummary`/`clearRideSummary`. Unlike
+  `stripe-entitlement.js`, this module's whole point IS durable local state —
+  don't conflate the two or apply stripe-entitlement's "zero durable state"
+  rule here.
 - **Strava account linking** (`GET /strava-authorize`, `GET /strava-callback`,
   `POST /strava-deauthorize` in `server.js`; helpers in
   `tools/strava-oauth.js` and `tools/strava-state-token.js`) is the first
@@ -169,6 +175,24 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   "Per-user Anthropic key" for the full contract;
   `tools/relay-anthropic-key.test.mjs` covers it against stubbed
   Twitch/Upstash.
+- **`POST /ride-summary`** (`server.js`) stores a voice-dictated post-ride
+  summary in the per-user store, keyed by the caller's verified Twitch id
+  (same identity pattern as every other authenticated endpoint here — never a
+  body-supplied id). This **replaced** the original mechanism: committing
+  `data/ride-summary.json` into this repo via the GitHub Contents API
+  (`GITHUB_CONTENT_PAT`, a repo-content-write-scoped PAT) and consuming it in
+  the workflow's first step — an anti-pattern (user-submitted data landing in
+  the app's own source repo) that this migration removed entirely.
+  `GITHUB_CONTENT_PAT` is no longer read anywhere in this repo; the workflow's
+  `contents: write` permission dropped to `contents: read` accordingly. Gated
+  like `/settings/anthropic-key`: `404` outside `MULTI_TENANT`, `503` if the
+  user store isn't configured. The captain's own single-account workflow step
+  reads/clears his summary from the store via the optional `CAPTAIN_TWITCH_ID`
+  GitHub Actions secret (unset → behaves as if nothing was ever recorded,
+  never fails); **Per-user Strava recaps** below reads/clears every other
+  linked user's the same way. See README.md "Voice ride summary" for the full
+  contract; `tools/relay-ride-summary.test.mjs` covers the endpoint against
+  stubbed Twitch/Upstash.
 - **Per-user Strava recaps** (`tools/per-user-recap.mjs`,
   `tools/user-store.js`'s `listLinkedUsers()`, and the "Per-user Strava
   recaps" step in `.github/workflows/strava-youtube-comment.yml`) loop the
@@ -183,9 +207,14 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   instead by its own `RECAP_MARKER` string in the activity description (there's
   no YouTube-link check to reuse for idempotency). LLM key selection is each
   user's own decrypted `anthropicApiKeyEnc` if present, else the captain's
-  `ANTHROPIC_API_KEY` — graceful degradation, not a hard requirement. The new
-  workflow step is **independent of the captain's YOUTUBE_*/single-account
-  secrets** (only needs `STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` — shared
+  `ANTHROPIC_API_KEY` — graceful degradation, not a hard requirement. Also
+  folds in each user's own dictated ride summary (`getRideSummary()` — see
+  `POST /ride-summary` above) as `riderNotes` into `recap-writer.mjs`'s
+  existing prompt building (unchanged, reused verbatim), clearing it via
+  `clearRideSummary()` only after a successful write so a stale note isn't
+  reused on the next ride. The new workflow step is **independent of the
+  captain's YOUTUBE_*/single-account secrets** (only needs
+  `STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET` — shared
   Strava API app — plus `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN`/
   `TOKEN_ENCRYPTION_KEY`), so a captain without YouTube configured still gets
   per-user recaps; it exits cleanly (zero users processed) when those three

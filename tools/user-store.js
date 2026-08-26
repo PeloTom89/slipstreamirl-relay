@@ -1,16 +1,18 @@
 // tools/user-store.js — durable per-user store for multi-tenant features
-// (Strava linking, per-user Anthropic keys), backed by Upstash Redis's REST
-// API. CommonJS for the same reason as channel-token.js/stripe-entitlement.js:
-// server.js is CommonJS and needs to require() this synchronously at request
-// time — see AGENTS.md.
+// (Strava linking, per-user Anthropic keys, dictated ride summaries), backed
+// by Upstash Redis's REST API. CommonJS for the same reason as
+// channel-token.js/stripe-entitlement.js: server.js is CommonJS and needs to
+// require() this synchronously at request time — see AGENTS.md.
 //
 // Wired into server.js's Strava account linking endpoints
 // (/strava-authorize, /strava-callback, /strava-deauthorize — see AGENTS.md
 // "Strava account linking") and into the per-user recap loop
 // (tools/per-user-recap.mjs, consumed by
-// .github/workflows/strava-youtube-comment.yml) via listLinkedUsers(), and
-// into server.js's POST /settings/anthropic-key (see AGENTS.md) via
-// putAnthropicKey()/deleteAnthropicKey().
+// .github/workflows/strava-youtube-comment.yml) via listLinkedUsers(), into
+// server.js's POST /settings/anthropic-key (see AGENTS.md) via
+// putAnthropicKey()/deleteAnthropicKey(), and into server.js's
+// POST /ride-summary (see AGENTS.md) via
+// putRideSummary()/getRideSummary()/clearRideSummary().
 //
 // Record shape, one JSON blob per Redis key `user:{twitchId}` (twitchId is
 // the same Twitch user id verifyTwitchUser()/POST /channel-token already key
@@ -20,6 +22,7 @@
 //     twitchId,
 //     strava: { athleteId, refreshTokenEnc, scope, linkedAt } | null,
 //     anthropicApiKeyEnc: string | null,
+//     rideSummary: { summary, recordedAt } | null,
 //     updatedAt,
 //   }
 //
@@ -30,6 +33,12 @@
 // Upstash token alone must not be enough to decrypt anything. If
 // TOKEN_ENCRYPTION_KEY is missing/malformed, createUserStore() throws at
 // construction rather than silently falling back to plaintext.
+//
+// `rideSummary` is deliberately plaintext, unlike the two fields above — it's
+// low-sensitivity dictated rider text, not a credential, and encrypting it
+// would buy nothing (the recap workflow needs it in the clear anyway, and
+// Upstash is trusted-enough infra for the actual secrets already stored
+// here). Don't lump it in with the encrypted-secret handling above.
 //
 // UPSTASH_API_BASE is a base-URL test seam, same convention as
 // TWITCH_HELIX_BASE/STRIPE_API_BASE (see AGENTS.md) — defaults to the real
@@ -127,7 +136,7 @@ async function upstashScan(apiBase, token, fetchImpl, cursor, pattern, count) {
 }
 
 function emptyRecord(twitchId) {
-  return { twitchId, strava: null, anthropicApiKeyEnc: null, updatedAt: null };
+  return { twitchId, strava: null, anthropicApiKeyEnc: null, rideSummary: null, updatedAt: null };
 }
 
 // SCAN page size and a belt-and-suspenders cap on the number of pages
@@ -205,6 +214,31 @@ function createUserStore({
     return saveUser(record);
   }
 
+  // rideSummary is plaintext (see the module header comment) — no
+  // encrypt()/decrypt() involved, unlike the Strava/Anthropic secrets above.
+  async function putRideSummary(twitchId, { summary, recordedAt }) {
+    const existing = (await getUser(twitchId)) || emptyRecord(twitchId);
+    const record = {
+      ...existing,
+      twitchId,
+      rideSummary: { summary, recordedAt: recordedAt || new Date().toISOString() },
+      updatedAt: new Date().toISOString(),
+    };
+    return saveUser(record);
+  }
+
+  async function getRideSummary(twitchId) {
+    const record = await getUser(twitchId);
+    return (record && record.rideSummary) || null;
+  }
+
+  async function clearRideSummary(twitchId) {
+    const existing = await getUser(twitchId);
+    if (!existing) return null;
+    const record = { ...existing, rideSummary: null, updatedAt: new Date().toISOString() };
+    return saveUser(record);
+  }
+
   // Decrypted read helpers — for in-process use only. Decrypt immediately
   // before use; never log the returned plaintext.
   async function getStravaRefreshToken(twitchId) {
@@ -249,6 +283,9 @@ function createUserStore({
     getStravaRefreshToken,
     getAnthropicKey,
     listLinkedUsers,
+    putRideSummary,
+    getRideSummary,
+    clearRideSummary,
   };
 }
 

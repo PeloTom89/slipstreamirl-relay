@@ -47,15 +47,23 @@ function makeStravaClient({ activity = baseActivity(), refreshFails = false, upd
   };
 }
 
-function makeUserStore({ refreshToken = "raw-refresh", anthropicKey = null } = {}) {
+function makeUserStore({ refreshToken = "raw-refresh", anthropicKey = null, rideSummary = null } = {}) {
   const deleted = [];
+  const clearedRideSummaries = [];
   return {
     deleted,
+    clearedRideSummaries,
     async getStravaRefreshToken() {
       return refreshToken;
     },
     async getAnthropicKey() {
       return anthropicKey;
+    },
+    async getRideSummary() {
+      return rideSummary;
+    },
+    async clearRideSummary(twitchId) {
+      clearedRideSummaries.push(twitchId);
     },
     async deleteStravaLink(twitchId) {
       deleted.push(twitchId);
@@ -159,6 +167,68 @@ describe("runRecapForUser", () => {
     assert.equal(seenApiKey, "user-own-key");
   });
 
+  test("folds the rider's own dictated ride summary into the recap prompt as riderNotes", async () => {
+    const userStore = makeUserStore({ rideSummary: { summary: "Felt great, chased a sunset.", recordedAt: "2026-01-01T00:00:00Z" } });
+    const stravaClient = makeStravaClient();
+    let seenBody;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url, opts) => {
+      seenBody = JSON.parse(opts.body);
+      return {
+        ok: true,
+        async json() {
+          return { content: [{ type: "text", text: JSON.stringify({ title: "T", opener: "O" }) }] };
+        },
+      };
+    };
+    try {
+      await runRecapForUser({
+        twitchId: "t1", userStore, stravaClient, fallbackAnthropicKey: "captain-key", log: () => {},
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    const promptText = seenBody.messages[0].content;
+    assert.match(promptText, /Felt great, chased a sunset\./);
+  });
+
+  test("clears the ride summary after a successful write that used it", async () => {
+    const userStore = makeUserStore({
+      anthropicKey: "user-own-key",
+      rideSummary: { summary: "Rode out to the lake.", recordedAt: "2026-01-01T00:00:00Z" },
+    });
+    const stravaClient = makeStravaClient();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: true,
+      async json() {
+        return { content: [{ type: "text", text: JSON.stringify({ title: "T", opener: "O" }) }] };
+      },
+    });
+    try {
+      await runRecapForUser({ twitchId: "t1", userStore, stravaClient, log: () => {} });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.deepEqual(userStore.clearedRideSummaries, ["t1"]);
+  });
+
+  test("does not touch clearRideSummary when there was no ride summary to clear", async () => {
+    const userStore = makeUserStore({ rideSummary: null });
+    const stravaClient = makeStravaClient();
+    await runRecapForUser({ twitchId: "t1", userStore, stravaClient, log: () => {} });
+    assert.deepEqual(userStore.clearedRideSummaries, []);
+  });
+
+  test("dryRun never clears the ride summary", async () => {
+    const userStore = makeUserStore({
+      rideSummary: { summary: "Rode out to the lake.", recordedAt: "2026-01-01T00:00:00Z" },
+    });
+    const stravaClient = makeStravaClient();
+    await runRecapForUser({ twitchId: "t1", userStore, stravaClient, dryRun: true, log: () => {} });
+    assert.deepEqual(userStore.clearedRideSummaries, []);
+  });
+
   test("dryRun never calls updateActivity", async () => {
     const userStore = makeUserStore();
     const stravaClient = makeStravaClient();
@@ -194,6 +264,10 @@ describe("runPerUserRecaps", () => {
       async getAnthropicKey() {
         return null;
       },
+      async getRideSummary() {
+        return null;
+      },
+      async clearRideSummary() {},
       async deleteStravaLink(twitchId) {
         deleted.push(twitchId);
       },

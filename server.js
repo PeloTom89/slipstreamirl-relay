@@ -203,13 +203,6 @@ const CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
 // AI features (voice ride plan → Twitch title) — calls Claude directly; the key
 // never leaves the server.
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
-// Ride-summary bridge: the relay has no persistent storage of its own (Render's
-// free tier resets in-memory state on every sleep/restart), so a voice-dictated
-// post-ride summary is committed to this repo via the GitHub Contents API and
-// picked up later by the Strava/YouTube GitHub Actions workflow.
-const GITHUB_CONTENT_PAT = process.env.GITHUB_CONTENT_PAT || "";
-const GITHUB_REPO = "PeloTom89/slipstreamirl-relay";
-const RIDE_SUMMARY_PATH = "data/ride-summary.json";
 
 const TWITCH_TITLE_PROMPT = [
   "Write a Twitch stream title for a cycling livestream, based on the rider's spoken plan for today's ride.",
@@ -792,56 +785,44 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Ride summary: park a voice-dictated post-ride summary in this repo (via the
-  // GitHub Contents API) so the later-running Strava/YouTube workflow can pick it
-  // up — the relay itself has no persistent storage that would survive that long.
-  //   POST /ride-summary?token=RELAY_TOKEN   body: {"summary":"...","recordedAt":"..."}
+  // Ride summary: store a voice-dictated post-ride summary in the durable
+  // per-user store, keyed by the caller's verified Twitch id, so the
+  // later-running Strava/YouTube workflow (the per-user recap step, plus the
+  // captain's own single-account step via CAPTAIN_TWITCH_ID) can fold it into
+  // that user's recap. Identity via verifyTwitchUser(), same as every other
+  // authenticated endpoint here — never a body-supplied id. Multi-tenant mode
+  // only, and only once the durable per-user store is configured — this
+  // replaced the old "commit into this repo via GITHUB_CONTENT_PAT" mechanism
+  // (an anti-pattern: user-submitted data landing in the app's own source
+  // repo behind a repo-content-write-scoped PAT). See AGENTS.md.
+  //   POST /ride-summary   body: {"twitchAccessToken":"...","summary":"...","recordedAt":"..."}
+  //   -> 200 {"ok":true}   400 bad input, 401 identity couldn't be verified,
+  //      503 user store not configured
   if (req.method === "POST" && pathOnly === "/ride-summary") {
-    const token = new URL(req.url, "http://x").searchParams.get("token");
-    if (token !== TOKEN) { res.writeHead(401); res.end(); return; }
+    if (!MULTI_TENANT) { res.writeHead(404); res.end(); return; }
+    const done = (status, obj) => {
+      res.writeHead(status, { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" });
+      res.end(JSON.stringify(obj));
+    };
+    if (!userStore) return done(503, { error: "user store not configured" });
     let body = "";
     req.on("data", (c) => { body += c; if (body.length > 2e4) req.destroy(); });
     req.on("end", async () => {
-      const done = (status, obj) => {
-        res.writeHead(status, { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" });
-        res.end(JSON.stringify(obj));
-      };
-      let summary, recordedAt;
-      try { ({ summary, recordedAt } = JSON.parse(body)); } catch { return done(400, { error: "bad json" }); }
+      let twitchAccessToken, summary, recordedAt;
+      try { ({ twitchAccessToken, summary, recordedAt } = JSON.parse(body)); } catch { return done(400, { error: "bad json" }); }
+      if (!twitchAccessToken || typeof twitchAccessToken !== "string") {
+        return done(400, { error: "twitchAccessToken required" });
+      }
       if (!summary || typeof summary !== "string" || !summary.trim()) {
         return done(400, { error: "summary required" });
       }
-      if (!GITHUB_CONTENT_PAT) return done(503, { error: "GITHUB_CONTENT_PAT not configured" });
-      try {
-        const ghHeaders = {
-          Authorization: "Bearer " + GITHUB_CONTENT_PAT,
-          Accept: "application/vnd.github+json",
-          "Content-Type": "application/json",
-          "User-Agent": "slipstreamirl-relay",
-        };
-        const contentsUrl = `https://api.github.com/repos/${GITHUB_REPO}/contents/${RIDE_SUMMARY_PATH}`;
-        let sha;
-        const getRes = await fetch(contentsUrl, { headers: ghHeaders });
-        if (getRes.status === 200) sha = (await getRes.json()).sha;
-        else if (getRes.status !== 404) throw new Error("github get failed " + getRes.status);
-
-        // Trailing newline matters: the consuming workflow reads this file into a
-        // GITHUB_OUTPUT heredoc block, and a file with no trailing newline glues its
-        // closing delimiter onto the JSON's last line, breaking the step.
-        const contentB64 = Buffer.from(JSON.stringify({
-          summary: summary.trim(),
-          recordedAt: recordedAt || new Date().toISOString(),
-        }, null, 2) + "\n").toString("base64");
-        const putRes = await fetch(contentsUrl, {
-          method: "PUT",
-          headers: ghHeaders,
-          body: JSON.stringify({ message: "ride-summary: update from app", content: contentB64, sha }),
-        });
-        if (!putRes.ok) throw new Error("github put failed " + putRes.status);
-        done(200, { ok: true });
-      } catch (e) {
-        done(502, { error: "failed to save ride summary" });
-      }
+      const twitchId = await verifyTwitchUser(twitchAccessToken).catch(() => null);
+      if (!twitchId) return done(401, { error: "could not verify Twitch identity" });
+      await userStore.putRideSummary(twitchId, {
+        summary: summary.trim(),
+        recordedAt: recordedAt || new Date().toISOString(),
+      });
+      done(200, { ok: true });
     });
     return;
   }

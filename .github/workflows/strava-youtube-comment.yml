@@ -11,7 +11,7 @@ on:
         default: false
         type: boolean
       rider_notes_override:
-        description: 'Optional rider notes to simulate with (dry run only) — data/ride-summary.json is usually already consumed by the time you want to preview'
+        description: 'Optional rider notes to simulate with (dry run only) — the captain''s own dictated summary in the store is usually already consumed by the time you want to preview'
         required: false
         default: ''
         type: string
@@ -37,23 +37,13 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   post-comment:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Read ride summary (if present)
-        id: ride_summary
-        run: |
-          if [ -f data/ride-summary.json ]; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-            { echo "summary<<RIDESUMMARY_EOF_9f3ac2"; cat data/ride-summary.json; echo; echo "RIDESUMMARY_EOF_9f3ac2"; } >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Add latest YouTube video link to latest Strava activity
         id: sync
@@ -65,7 +55,10 @@ jobs:
           STRAVA_REFRESH_TOKEN:       ${{ secrets.STRAVA_REFRESH_TOKEN }}
           ANTHROPIC_API_KEY:          ${{ secrets.ANTHROPIC_API_KEY }}
           MAPBOX_TOKEN:               ${{ secrets.MAPBOX_TOKEN }}
-          RIDE_SUMMARY_JSON:          ${{ steps.ride_summary.outputs.summary }}
+          CAPTAIN_TWITCH_ID:          ${{ secrets.CAPTAIN_TWITCH_ID }}
+          UPSTASH_REDIS_REST_URL:     ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN:   ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          TOKEN_ENCRYPTION_KEY:       ${{ secrets.TOKEN_ENCRYPTION_KEY }}
           DRY_RUN:                    ${{ github.event.inputs.dry_run }}
           RIDER_NOTES_OVERRIDE:       ${{ github.event.inputs.rider_notes_override }}
           ACTIVITY_ID_OVERRIDE:       ${{ github.event.inputs.activity_id_override }}
@@ -77,11 +70,11 @@ jobs:
           YOUTUBE_OAUTH_REFRESH_TOKEN: ${{ secrets.YOUTUBE_OAUTH_REFRESH_TOKEN }}
         run: |
           node --input-type=module <<'EOF'
-          import fs from 'node:fs';
           import { createStravaClient } from './tools/strava-client.mjs';
           import { matchRoadNames } from './tools/road-matching.mjs';
           import { buildRecapPrompt, generateRecap } from './tools/recap-writer.mjs';
           import { createYoutubeClient } from './tools/youtube-client.mjs';
+          import { createUserStore } from './tools/user-store.js';
 
           const strava = createStravaClient();
           const youtube = createYoutubeClient();
@@ -93,6 +86,21 @@ jobs:
           const S_REFRESH  = process.env.STRAVA_REFRESH_TOKEN;
           const CLAUDE_KEY = process.env.ANTHROPIC_API_KEY;
           const MAPBOX_TOKEN = process.env.MAPBOX_TOKEN;
+          // The captain's own dictated post-ride summary now lives in the durable
+          // per-user store under his own Twitch id (POST /ride-summary), same as
+          // every other linked rider's — see tools/per-user-recap.mjs and
+          // AGENTS.md. CAPTAIN_TWITCH_ID is optional: unset (or the store not
+          // configured) just means no dictated notes get folded in here, same as
+          // today when nothing was recorded.
+          const CAPTAIN_TWITCH_ID = process.env.CAPTAIN_TWITCH_ID;
+          let captainUserStore = null;
+          if (CAPTAIN_TWITCH_ID && process.env.TOKEN_ENCRYPTION_KEY && process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+            try {
+              captainUserStore = createUserStore({});
+            } catch (e) {
+              console.log('Could not construct user store for CAPTAIN_TWITCH_ID lookup (non-fatal, no dictated notes this run):', e.message);
+            }
+          }
           // Preview mode: logs the title/description Claude would generate against the
           // latest activity, but never writes to Strava or YouTube. Useful for testing
           // prompt/logic changes without spending a real post.
@@ -105,12 +113,6 @@ jobs:
           const TITLE_OVERRIDE = (process.env.TITLE_OVERRIDE || '').trim();
           const OPENER_OVERRIDE = (process.env.OPENER_OVERRIDE || '').trim();
           const MANUAL_APPLY = Boolean(TITLE_OVERRIDE && OPENER_OVERRIDE);
-
-          function emitOutput(key, value) {
-            if (process.env.GITHUB_OUTPUT) {
-              fs.appendFileSync(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
-            }
-          }
 
           if (!YT_KEY || !YT_CHANNEL || !S_ID || !S_SECRET || !S_REFRESH) {
             console.log('Missing required secrets — skipping.');
@@ -210,16 +212,25 @@ jobs:
           const timeStr = `${Math.floor(totalMin / 60)}:${String(totalMin % 60).padStart(2, '0')}`;
           const ft = Math.round((detail.total_elevation_gain || 0) * 3.28084).toLocaleString('en-US');
 
-          // 5b. Rider's own dictated ride summary, if one was recorded after !stop.
-          //     Purely additive context for Claude — every tone rule below still applies.
+          // 5b. Rider's own dictated ride summary, if one was recorded after !stop —
+          //     read from the durable per-user store under CAPTAIN_TWITCH_ID (see
+          //     above), same store/mechanism every other linked rider's notes go
+          //     through. Purely additive context for Claude — every tone rule below
+          //     still applies. usedStoredRideSummary tracks whether this came from
+          //     the store (as opposed to the override) so it's only cleared below
+          //     when it was actually consumed from there.
           let riderNotes = RIDER_NOTES_OVERRIDE || null;
-          if (!riderNotes) {
+          let usedStoredRideSummary = false;
+          if (!riderNotes && captainUserStore) {
             try {
-              const parsed = JSON.parse(process.env.RIDE_SUMMARY_JSON || 'null');
-              if (parsed && typeof parsed.summary === 'string' && parsed.summary.trim()) {
-                riderNotes = parsed.summary.trim();
+              const stored = await captainUserStore.getRideSummary(CAPTAIN_TWITCH_ID);
+              if (stored && typeof stored.summary === 'string' && stored.summary.trim()) {
+                riderNotes = stored.summary.trim();
+                usedStoredRideSummary = true;
               }
-            } catch {}
+            } catch (e) {
+              console.log('Could not read captain ride summary from store (non-fatal, no dictated notes this run):', e.message);
+            }
           }
 
           // 5c. Real road names from the GPS breadcrumb (optional — only runs if
@@ -301,9 +312,17 @@ jobs:
             process.exit(1);
           }
           console.log(`Updated Strava activity ${activity.id} (title: "${title || detail.name}") with ${videoUrl}`);
-          // Signals the "delete consumed ride summary" step downstream — only set on a
-          // genuine Strava write, never on the early skip branches above.
-          emitOutput('strava_updated', 'true');
+
+          // Consumed — clear the captain's stored ride summary so a stale note
+          // isn't folded into his next ride, mirroring the per-user recap loop's
+          // own clearRideSummary() after a successful write (tools/per-user-recap.mjs).
+          if (usedStoredRideSummary && captainUserStore) {
+            try {
+              await captainUserStore.clearRideSummary(CAPTAIN_TWITCH_ID);
+            } catch (e) {
+              console.log('Failed to clear captain ride summary (non-fatal):', e.message);
+            }
+          }
 
           // 9. Mirror the description onto the YouTube video itself, linking back to
           //    Strava instead of to the video. Best-effort: never fails the run, since
@@ -415,12 +434,3 @@ jobs:
           });
           console.log('Per-user recap summary:', JSON.stringify(summary));
           EOF
-
-      - name: Delete consumed ride summary
-        if: steps.ride_summary.outputs.found == 'true' && steps.sync.outputs.strava_updated == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          SHA=$(gh api repos/${{ github.repository }}/contents/data/ride-summary.json --jq .sha)
-          gh api -X DELETE repos/${{ github.repository }}/contents/data/ride-summary.json \
-            -f message="ride-summary: consumed by run ${{ github.run_id }}" -f sha="$SHA"
