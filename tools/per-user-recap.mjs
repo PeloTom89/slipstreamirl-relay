@@ -4,7 +4,10 @@
 // Reuses tools/strava-client.mjs, tools/road-matching.mjs, and
 // tools/recap-writer.mjs exactly as the captain's own path does — the only
 // new logic here is per-user iteration, LLM-key fallback, an idempotency
-// marker, and per-user failure isolation. See AGENTS.md.
+// marker, per-user failure isolation, and folding in each user's own
+// dictated ride summary (POST /ride-summary -> userStore.getRideSummary(),
+// cleared via clearRideSummary() after a successful write so it isn't
+// reused next ride). See AGENTS.md.
 //
 // Deliberately does NOT touch YouTube: per the approved scope decision,
 // YouTube video-linking stays captain-only (still lives only in the
@@ -88,18 +91,28 @@ export async function runRecapForUser({
 
   const anthropicKey = (await userStore.getAnthropicKey(twitchId)) || fallbackAnthropicKey || null;
 
+  // The rider's own dictated post-ride summary (POST /ride-summary), if one
+  // was recorded since the last recap — same riderNotes handling
+  // recap-writer.mjs already applies for the captain's single-account path,
+  // just sourced from the per-user store instead of RIDE_SUMMARY_JSON.
+  const rideSummary = await userStore.getRideSummary(twitchId);
+  const riderNotes = rideSummary && typeof rideSummary.summary === "string" && rideSummary.summary.trim()
+    ? rideSummary.summary.trim()
+    : null;
+
   let title = null;
   let hook = null;
   if (anthropicKey) {
     try {
       const segments = await stravaClient.rankSegmentsByPopularity(accessToken, detail.segment_efforts || []);
       const prompt = buildRecapPrompt({
-        detail, mi, timeStr, ft, videoTitle: detail.name, segments, roadNames, riderNotes: null,
+        detail, mi, timeStr, ft, videoTitle: detail.name, segments, roadNames, riderNotes,
       });
       const result = await generateRecap({ prompt, apiKey: anthropicKey });
       if (result.ok) {
         if (result.title) title = result.title;
         if (result.opener) hook = result.opener;
+        log(`Generated recap for twitchId=${twitchId}` + (riderNotes ? " (with rider notes)." : "."));
       } else {
         log(`Claude API error for twitchId=${twitchId} — writing stats-only recap: ${JSON.stringify(result.error)}`);
       }
@@ -122,6 +135,18 @@ export async function runRecapForUser({
   }
 
   await stravaClient.updateActivity(accessToken, activity.id, { description: newDescription, name: title });
+
+  // Consumed — clear it so a stale note isn't folded into the rider's next
+  // ride, mirroring how the captain's single-account workflow step deletes
+  // its ride-summary source after a successful write.
+  if (riderNotes) {
+    try {
+      await userStore.clearRideSummary(twitchId);
+    } catch (err) {
+      log(`Failed to clear ride summary for twitchId=${twitchId} (non-fatal): ${err.message}`);
+    }
+  }
+
   return { ok: true, activityId: activity.id };
 }
 

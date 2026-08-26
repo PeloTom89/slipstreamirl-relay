@@ -213,6 +213,53 @@ describe("createUserStore against a stubbed Upstash REST endpoint", () => {
   test("deleteStravaLink on an unknown id is a no-op, not an error", async () => {
     assert.equal(await store.deleteStravaLink("no-such-user"), null);
   });
+
+  test("getRideSummary of a user with no summary returns null", async () => {
+    assert.equal(await store.getRideSummary("no-such-user"), null);
+  });
+
+  test("round trip: putRideSummary then getRideSummary returns it back", async () => {
+    await store.putRideSummary("twitch-7", { summary: "Great ride, chased sunset.", recordedAt: "2026-01-01T00:00:00Z" });
+    const summary = await store.getRideSummary("twitch-7");
+    assert.equal(summary.summary, "Great ride, chased sunset.");
+    assert.equal(summary.recordedAt, "2026-01-01T00:00:00Z");
+  });
+
+  test("putRideSummary defaults recordedAt when omitted", async () => {
+    await store.putRideSummary("twitch-7b", { summary: "No timestamp given." });
+    const summary = await store.getRideSummary("twitch-7b");
+    assert.ok(summary.recordedAt, "expected a default recordedAt to be filled in");
+  });
+
+  test("putRideSummary is stored as plaintext, not ciphertext", async () => {
+    await store.putRideSummary("twitch-8", { summary: "plainly readable notes", recordedAt: "2026-01-01T00:00:00Z" });
+    const record = await store.getUser("twitch-8");
+    assert.equal(record.rideSummary.summary, "plainly readable notes");
+  });
+
+  test("putRideSummary preserves an existing strava link and anthropic key, and vice versa", async () => {
+    await store.putStravaLink("twitch-9", { athleteId: 5, refreshToken: "refresh-1", scope: "read" });
+    await store.putAnthropicKey("twitch-9", "sk-ant-1");
+    await store.putRideSummary("twitch-9", { summary: "notes", recordedAt: "2026-01-01T00:00:00Z" });
+    const record = await store.getUser("twitch-9");
+    assert.equal(record.strava.athleteId, 5);
+    assert.ok(record.anthropicApiKeyEnc);
+    assert.equal(record.rideSummary.summary, "notes");
+  });
+
+  test("clearRideSummary clears the summary but leaves the rest of the record", async () => {
+    await store.putStravaLink("twitch-10", { athleteId: 6, refreshToken: "refresh-1", scope: "read" });
+    await store.putRideSummary("twitch-10", { summary: "notes", recordedAt: "2026-01-01T00:00:00Z" });
+    await store.clearRideSummary("twitch-10");
+    const record = await store.getUser("twitch-10");
+    assert.equal(record.rideSummary, null);
+    assert.equal(record.strava.athleteId, 6, "strava link must be unaffected by a ride summary clear");
+    assert.equal(await store.getRideSummary("twitch-10"), null);
+  });
+
+  test("clearRideSummary on an unknown id is a no-op, not an error", async () => {
+    assert.equal(await store.clearRideSummary("no-such-user"), null);
+  });
 });
 
 describe("listLinkedUsers", () => {

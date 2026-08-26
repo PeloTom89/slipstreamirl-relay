@@ -27,7 +27,8 @@ to run this. There's no live hosted service to sign up for.
   proxies Twitch chat badge images for the chat overlay.
 - Backs two app features that talk to Claude server-side (the API key never
   reaches the phone): generating a Twitch title from a dictated **Voice Ride Plan**,
-  and parking a dictated **Voice Ride Summary** for the Strava workflow below.
+  and storing a dictated **Voice Ride Summary** (per Twitch user, in the durable
+  per-user store — see **Voice ride summary** below) for the Strava workflow below.
 - Runs a **scheduled GitHub Action** (`.github/workflows/strava-youtube-comment.yml`)
   that finds your latest YouTube upload, matches it to the Strava activity you
   just rode, and updates that activity's title + description — written by Claude
@@ -57,13 +58,15 @@ to run this. There's no live hosted service to sign up for.
 
 Endpoints: `POST /push` (sender), `GET /health` (token check), `GET /badges`
 (chat badges), `GET /app-redirect` (Twitch OAuth bounce), `POST /ai/twitch-title`
-(Claude ride-plan → title), `POST /ride-summary` (parks a dictated post-ride
-summary for the workflow below), `POST /channel-token` (entitlement-gated
+(Claude ride-plan → title), `POST /ride-summary` (stores a dictated post-ride
+summary for the workflow below, per Twitch user — multi-tenant mode, see
+**Voice ride summary** below), `POST /channel-token` (entitlement-gated
 channel push token issuance, multi-tenant mode), `POST /stripe-webhook`
 (Stripe entitlement events, multi-tenant mode), `GET /strava-authorize` /
 `GET /strava-callback` / `POST /strava-deauthorize` (per-user Strava account
-linking, multi-tenant mode — see **Strava account linking** below), WebSocket
-`?role=overlay|sender`.
+linking, multi-tenant mode — see **Strava account linking** below),
+`POST /settings/anthropic-key` (per-user Anthropic key, multi-tenant mode —
+see **Per-user Anthropic key** below), WebSocket `?role=overlay|sender`.
 
 ## Overlay features
 
@@ -101,9 +104,12 @@ linking, multi-tenant mode — see **Strava account linking** below), WebSocket
 - `CLIENT_SECRET` *(optional)* — enables chat badge images via Twitch Helix.
 - `ANTHROPIC_API_KEY` *(optional)* — enables the Voice Ride Plan title-generation
   endpoint (`/ai/twitch-title`).
-- `GITHUB_CONTENT_PAT` *(optional)* — lets `/ride-summary` commit a dictated
-  post-ride summary into this repo via the GitHub Contents API, for the Strava
-  workflow above to pick up.
+
+> `GITHUB_CONTENT_PAT` (and the "commit `data/ride-summary.json` into this repo"
+> mechanism it enabled) is **retired** — `/ride-summary` now writes to the durable
+> per-user store instead. See **Voice ride summary** below. If this PAT is still
+> set on your deploy, it's unused and safe to remove — the relay no longer needs
+> repo-content-write access to anything.
 
 Everything below (`MULTI_TENANT`, `STRIPE_*`, `BETA_ALLOWLIST_*`) is optional
 and off by default; a plain deploy with just the vars above behaves exactly
@@ -246,7 +252,7 @@ anything real unless you ask them to):
 | input | what it does |
 |---|---|
 | `dry_run` | logs the title/description Claude would generate; writes nothing |
-| `rider_notes_override` | simulate with arbitrary ride notes (the real dictated file is usually already consumed by the time you want to preview) |
+| `rider_notes_override` | simulate with arbitrary ride notes (the real dictated summary in the store is usually already consumed by the time you want to preview) |
 | `activity_id_override` | target a specific activity instead of whatever's "latest" |
 | `title_override` + `opener_override` | skip Claude and apply this exact reviewed text to the activity (replaces the description instead of appending) |
 | `list_recent` | logs your 10 most recent activity ids/names/dates — no Claude/Mapbox calls, no YouTube check |
@@ -257,7 +263,12 @@ anything real unless you ask them to):
 `STRAVA_REFRESH_TOKEN`, `ANTHROPIC_API_KEY` (required); `MAPBOX_TOKEN` (optional —
 enables real road-name matching); `YOUTUBE_OAUTH_CLIENT_ID` /
 `YOUTUBE_OAUTH_CLIENT_SECRET` / `YOUTUBE_OAUTH_REFRESH_TOKEN` (optional — mirrors
-the description onto the YouTube video too).
+the description onto the YouTube video too); `CAPTAIN_TWITCH_ID` plus
+`UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` / `TOKEN_ENCRYPTION_KEY`
+(optional — lets this step read/clear the captain's own dictated ride summary
+from the durable per-user store; see **Voice ride summary** below). Without
+`CAPTAIN_TWITCH_ID`, this step behaves exactly as if no summary was ever
+recorded — it never fails for lacking it.
 
 ### Per-user Strava recaps
 
@@ -277,6 +288,11 @@ their own latest ride, using their own stored Strava credential.
   upload for it has landed and they've set one; otherwise falls back to the
   same `ANTHROPIC_API_KEY` secret the captain path uses. A user without their
   own key still gets a recap.
+- **Dictated ride notes:** if the rider recorded a Voice Ride Summary (see
+  **Voice ride summary** below), it's read via `getRideSummary()` and folded
+  into the recap prompt exactly like the captain path's own dictated notes —
+  and cleared via `clearRideSummary()` after a successful write, so a stale
+  note isn't reused on the rider's next ride.
 - **Captain dedupe:** if the captain's own account is *also* linked via the
   store (e.g. he links through the app too), that store entry is skipped —
   matched by Strava athlete id, not Twitch id — so his own activity isn't
@@ -556,3 +572,44 @@ calls `deleteAnthropicKey()`.
 
 The key is never logged. `tools/relay-anthropic-key.test.mjs` covers this
 against stubbed Twitch/Upstash.
+
+## Voice ride summary
+
+`POST /ride-summary` lets a signed-in user store a voice-dictated post-ride
+summary — recorded by the app right after `!stop` — so the Strava/YouTube
+workflow above can fold their own words into their own recap. Multi-tenant
+mode only (`MULTI_TENANT=1`), and only once the **durable per-user store**
+above is configured — otherwise it answers `503`.
+
+Body: `{"twitchAccessToken":"...","summary":"...","recordedAt":"..."}`.
+Identity comes from `verifyTwitchUser()` on the Twitch access token, exactly
+like every other authenticated endpoint here — a body-supplied Twitch id is
+never trusted. On success the summary is stored via `putRideSummary()` and
+the response is `200 {"ok":true}`. Unlike the Strava refresh token / Anthropic
+key above, the summary is stored **as plaintext** — it's low-sensitivity
+dictated rider text, not a credential.
+
+- **Per-user Strava recaps** (above) reads each linked user's summary via
+  `getRideSummary()` and clears it via `clearRideSummary()` after a
+  successful write, so it's used exactly once, on the next ride's recap.
+- **The captain's own single-account step** (above) reads/clears his own
+  summary the same way, keyed by the optional `CAPTAIN_TWITCH_ID` GitHub
+  Actions secret — his app now uploads to the store under his own Twitch id
+  just like everyone else's, instead of anything file-based.
+
+**Retired mechanism:** this replaced committing `data/ride-summary.json` into
+this repo via the GitHub Contents API (`GITHUB_CONTENT_PAT`) — user-submitted
+data landing in the app's own source repo, behind a repo-content-write-scoped
+PAT, was an anti-pattern this migration removes. `GITHUB_CONTENT_PAT` is no
+longer read anywhere in this repo and can be deleted from both the relay's env
+vars and the GitHub Actions secrets, along with the (now-unused)
+`contents: write` workflow permission. If you're upgrading an existing deploy,
+let the current workflow consume any pending `data/ride-summary.json` once
+*before* deploying this change — it's the last thing that will ever read that
+file — or port its contents into the store by hand
+(`putRideSummary(<captain twitch id>, {...})`) if you can't wait for the next
+ride.
+
+`tools/relay-ride-summary.test.mjs` covers the endpoint against stubbed
+Twitch/Upstash; `tools/per-user-recap.test.mjs` covers the fold-in/clear
+behavior against a stubbed store.
