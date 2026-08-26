@@ -89,13 +89,33 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   silently revoking every beta tester. Any change to its fetch/parse path
   needs a test proving that rule still holds, not just a happy-path test —
   see README.md "Beta allowlist" for the full design.
-- Two env vars exist purely as test seams and are never meant to be set in
-  production: `TWITCH_HELIX_BASE` and `STRIPE_API_BASE` (both default to the
-  real API hosts). Integration tests point these at a local stub HTTP server
-  so `tools/relay-entitlement.test.mjs` can exercise `POST /channel-token`
-  and `POST /stripe-webhook` end-to-end without live Twitch or Stripe
-  credentials. Don't document these in README.md's operator-facing env var
-  tables — they're not something the operator ever needs to set.
+- Three env vars exist purely as test seams and are never meant to be set in
+  production: `TWITCH_HELIX_BASE`, `STRIPE_API_BASE`, and `UPSTASH_API_BASE`
+  (all default to the real API hosts). Integration tests point these at a
+  local stub HTTP server so `tools/relay-entitlement.test.mjs` and
+  `tools/user-store.test.mjs` can exercise their respective endpoints
+  end-to-end without live Twitch, Stripe, or Upstash credentials. Don't
+  document these in README.md's operator-facing env var tables — they're not
+  something the operator ever needs to set.
+- `tools/user-store.js` is the relay's only durable per-user store (keyed on
+  the Twitch user id, the same identity `verifyTwitchUser()`/`POST
+  /channel-token` already use — no separate id) — one JSON blob per Redis key
+  `user:{twitchId}`, backed by Upstash Redis's REST API (`UPSTASH_REDIS_REST_URL`
+  / `UPSTASH_REDIS_REST_TOKEN`, `UPSTASH_API_BASE` test seam per the point
+  above). CommonJS for the same `server.js`-`require()`s-this-synchronously
+  reason as `channel-token.js`/`stripe-entitlement.js`. Secrets
+  (`strava.refreshTokenEnc`, `anthropicApiKeyEnc`) are AES-256-GCM ciphertext
+  produced by this module's own `crypto` before anything reaches Upstash — the
+  encryption key (`TOKEN_ENCRYPTION_KEY`) and the Upstash access token are
+  deliberately two independent secrets, so a leaked Upstash token alone can't
+  decrypt anything; `createUserStore()` throws at construction if
+  `TOKEN_ENCRYPTION_KEY` is missing/malformed rather than falling back to
+  plaintext. **Not wired into `server.js` yet** — this is the storage
+  primitive only; the Strava OAuth flow, key-upload endpoint, and recap
+  changes that will consume it are separate follow-up work. Unlike
+  `stripe-entitlement.js`, this module's whole point IS durable local state —
+  don't conflate the two or apply stripe-entitlement's "zero durable state"
+  rule here.
 
 ## Maintaining this file
 
