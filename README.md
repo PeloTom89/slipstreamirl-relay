@@ -458,10 +458,9 @@ free-tier REST API, with secrets encrypted application-side (AES-256-GCM)
 before they ever reach Upstash. It's wired into **Strava account linking**
 below and into the **per-user Strava recaps** step above via
 `listLinkedUsers()` (a paginated `SCAN` over every `user:*` record, returning
-only the ones with a live Strava link). The app-side upload endpoint for
-per-user Anthropic keys is still separate follow-up work — until it lands,
-`anthropicApiKeyEnc` stays empty and every user's recap falls back to the
-captain's own `ANTHROPIC_API_KEY`.
+only the ones with a live Strava link). Per-user Anthropic keys are uploaded
+via **`POST /settings/anthropic-key`** — see **Per-user Anthropic key**
+below.
 
 - `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` — from your Upstash
   Redis database's REST API credentials.
@@ -532,3 +531,28 @@ above is configured.
 
 - `STRAVA_CLIENT_ID` — your Strava API application's Client ID.
 - `STRAVA_CLIENT_SECRET` — its Client Secret. Never commit it.
+
+## Per-user Anthropic key
+
+`POST /settings/anthropic-key` lets a signed-in user upload their own
+Anthropic API key so **per-user Strava recaps** (above) generate using their
+key instead of the captain's `ANTHROPIC_API_KEY`. It's the same key the app
+already stores on-device (Settings, used directly for the BYO-title feature)
+— this endpoint just uploads a copy for the recap runner to read.
+Multi-tenant mode only (`MULTI_TENANT=1`), and only once the **durable
+per-user store** above is configured — otherwise it answers `503`.
+
+Body: `{"twitchAccessToken":"...","anthropicApiKey":"..."}`. Identity comes
+from `verifyTwitchUser()` on the Twitch access token, exactly like every
+other authenticated endpoint here — a body-supplied Twitch id is never
+trusted. On success the key is stored via `putAnthropicKey()` (encrypted, see
+**Durable per-user store**) and the response is `200 {"ok":true}`. The key is
+validated only as a bounded-length string (rejects anything over 200 chars or
+non-string input) — it is never checked against Anthropic's API here.
+
+**Clearing the key** (reverting to the captain's-key fallback): send the same
+request with `anthropicApiKey` omitted or an empty string. Either shape
+calls `deleteAnthropicKey()`.
+
+The key is never logged. `tools/relay-anthropic-key.test.mjs` covers this
+against stubbed Twitch/Upstash.
