@@ -65,6 +65,7 @@ const {
 } = require("./tools/stripe-entitlement.js");
 const { createRemoteAllowlist } = require("./tools/beta-allowlist-remote.js");
 const { createUserStore } = require("./tools/user-store.js");
+const { createDownloadStats } = require("./tools/download-stats.js");
 const { buildAuthorizeUrl, exchangeCode, refreshAccessToken, deauthorize } = require("./tools/strava-oauth.js");
 const { signStravaState, verifyStravaState } = require("./tools/strava-state-token.js");
 
@@ -203,6 +204,19 @@ const CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || "";
 // AI features (voice ride plan → Twitch title) — calls Claude directly; the key
 // never leaves the server.
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
+
+// Stable, counted redirect for the Android APK download. ANDROID_APK_URL is the
+// operator-updated pointer to the current Android build's direct artifact URL
+// (the raw https://expo.dev/artifacts/eas/...apk value that used to be
+// hardcoded into the website/Discord). Updating it is now the ONLY step when a
+// new Android build ships — the public link
+// (https://relay.slipstreamirl.com/download/android) never changes. See
+// README.md. Unset → GET /download/android responds 503, never a broken
+// redirect. Every hit bumps an Upstash counter (stats:android-downloads) shown
+// on the status line; that counter is best-effort and never blocks the
+// download (see tools/download-stats.js).
+const ANDROID_APK_URL = process.env.ANDROID_APK_URL || "";
+const downloadStats = createDownloadStats({});
 
 const TWITCH_TITLE_PROMPT = [
   "Write a Twitch stream title for a cycling livestream, based on the rider's spoken plan for today's ride.",
@@ -827,6 +841,24 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Stable public redirect for the Android APK download. Counts every hit
+  // (Upstash INCR, best-effort) then redirects to the current build. If
+  // ANDROID_APK_URL is unset we 503 rather than emit a broken redirect. The
+  // count must never block the download: we try to count, then redirect
+  // unconditionally — a failed/unconfigured counter still 302s.
+  if (req.method === "GET" && pathOnly === "/download/android") {
+    if (!ANDROID_APK_URL) {
+      res.writeHead(503, { "Content-Type": "text/plain" });
+      res.end("Android build not currently available");
+      return;
+    }
+    downloadStats.increment().finally(() => {
+      res.writeHead(302, { Location: ANDROID_APK_URL });
+      res.end();
+    });
+    return;
+  }
+
   // Static preview of the Twitch extension (app's Overlay → Extension tab). Serves
   // the copied extension assets under /ext/… so the app can load them with ?relay.
   if (req.method === "GET" && pathOnly.startsWith("/ext/")) {
@@ -853,16 +885,28 @@ const server = http.createServer((req, res) => {
     return;
   }
   res.writeHead(200, { "Content-Type": "text/plain" });
+  // `/` doubles as the process health probe, so never block it on Redis:
+  // read the download count from the in-memory cache (peek()) and kick off a
+  // non-blocking refresh for next time. Omitted entirely until a count has
+  // been seen (a fresh process, or a refresh that hasn't landed yet).
+  let downloadsNote = null;
+  if (downloadStats.configured) {
+    const n = downloadStats.peek();
+    if (typeof n === "number") downloadsNote = n + " android downloads";
+    downloadStats.refresh().catch(() => {});
+  }
   if (MULTI_TENANT) {
     const allowlist = effectiveAllowlist();
     const notes = [];
     if (BETA_OPEN_ACCESS) notes.push("beta open access ON");
     if (allowlist.size) notes.push(allowlist.size + " beta allowlisted");
     if (remoteAllowlist) notes.push("remote " + remoteAllowlist.status().state);
+    if (downloadsNote) notes.push(downloadsNote);
     const suffix = notes.length ? ", " + notes.join(", ") : "";
     res.end("location relay up (multi-tenant, " + channels.size + " channel" + (channels.size === 1 ? "" : "s") + suffix + ")");
   } else {
-    res.end("location relay up (broadcast delay " + defaultChannel.delayMs + "ms, timer-sync)");
+    const suffix = downloadsNote ? ", " + downloadsNote : "";
+    res.end("location relay up (broadcast delay " + defaultChannel.delayMs + "ms, timer-sync" + suffix + ")");
   }
 });
 

@@ -104,6 +104,18 @@ see **Per-user Anthropic key** below), WebSocket `?role=overlay|sender`.
 - `CLIENT_SECRET` *(optional)* — enables chat badge images via Twitch Helix.
 - `ANTHROPIC_API_KEY` *(optional)* — enables the Voice Ride Plan title-generation
   endpoint (`/ai/twitch-title`).
+- `ANDROID_APK_URL` *(optional)* — the operator-updated pointer to the **current**
+  Android build's direct artifact URL (the raw
+  `https://expo.dev/artifacts/eas/…apk` value). Powers `GET /download/android`, a
+  stable public redirect that also counts downloads (a plain Upstash `INCR` on
+  `stats:android-downloads`, surfaced on the `/` status line; needs
+  `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` — see **Durable per-user
+  store** for those, but counting is best-effort and never blocks the download).
+  Unset → `/download/android` returns `503` (never a broken redirect).
+  **When a new Android build ships, updating this env var is the only step
+  needed** — do not edit the website or Discord links. Everywhere that used to
+  link the raw Expo artifact should now link the stable URL
+  `https://relay.slipstreamirl.com/download/android` instead, which never changes.
 
 > `GITHUB_CONTENT_PAT` (and the "commit `data/ride-summary.json` into this repo"
 > mechanism it enabled) is **retired** — `/ride-summary` now writes to the durable
