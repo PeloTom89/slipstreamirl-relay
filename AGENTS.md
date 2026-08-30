@@ -251,6 +251,24 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   both secrets are present). See README.md "Discord merge changelog" for the
   full contract.
 
+- **`GET /download/android`** (`server.js`, helper `tools/download-stats.js`)
+  is a stable public redirect to the current Android APK: reads
+  `ANDROID_APK_URL` (operator-updated pointer to the raw Expo artifact URL),
+  `503`s if unset, otherwise `302`s there. Every hit does a best-effort
+  Upstash `INCR stats:android-downloads` — structured as "try to count, then
+  redirect unconditionally": the counter NEVER blocks or fails the download,
+  and `download-stats.js`'s `increment()` never throws. The `/` status line
+  shows the count from an in-memory cache (`peek()`, warmed by `increment()`'s
+  INCR response + a non-blocking `refresh()`), never a blocking Redis read on
+  that request path — `/` is also the health probe. Independent of
+  `MULTI_TENANT`/the per-user store — it only
+  needs `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN` (same
+  `UPSTASH_API_BASE` test seam), and degrades to an uncounted redirect when
+  those are absent. This durable counter is fine to keep in Upstash (per
+  `tools/user-store.js`'s own reasoning) — do NOT apply
+  `stripe-entitlement.js`'s "no durable local state" rule here. Covered by
+  `tools/download-stats.test.mjs` + `tools/relay-android-download.test.mjs`.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.
